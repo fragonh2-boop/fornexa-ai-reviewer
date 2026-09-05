@@ -1,5 +1,6 @@
 import { WebClient } from "@slack/web-api";
 import { config } from "../config.js";
+import { parseReviewRequest } from "../review-request.js";
 
 const slack = new WebClient(config.slack.botToken);
 
@@ -37,7 +38,7 @@ export async function readRecentHistory(limit = 200): Promise<SlackMessage[]> {
 export function findPendingHandoff(
   messages: SlackMessage[],
   agentLabel: string
-): { prNumber: number; raw: SlackMessage } | null {
+): { prNumber: number; requestedHead: string; raw: SlackMessage } | null {
   const requestMarker = `${agentLabel} — ACCIÓN REQUERIDA`;
   const responseMarker = `${agentLabel} — `;
 
@@ -49,10 +50,10 @@ export function findPendingHandoff(
       );
       if (alreadyAnswered) continue;
 
-      const prMatch = msg.text.match(/PR\s*#(\d+)/i);
-      if (!prMatch) continue;
+      const request = parseReviewRequest(msg.text, agentLabel);
+      if (!request) continue;
 
-      return { prNumber: Number(prMatch[1]), raw: msg };
+      return { ...request, raw: msg };
     }
   }
   return null;

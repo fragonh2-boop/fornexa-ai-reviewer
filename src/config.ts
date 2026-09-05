@@ -20,6 +20,7 @@ export const config = {
     botToken: required("SLACK_BOT_TOKEN"),
     channelId: process.env.SLACK_CHANNEL_ID ?? "C0BT661FYLW",
     agentLabel: process.env.SLACK_AGENT_LABEL ?? "DEEPSEEK",
+    signingSecret: process.env.SLACK_SIGNING_SECRET?.trim() || null,
   },
   github: {
     token: required("GITHUB_TOKEN"),

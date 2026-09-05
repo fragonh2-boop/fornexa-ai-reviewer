@@ -24,6 +24,7 @@ que sí llega a producción.
    - Instalarla en el workspace e **invitar el bot al canal `#fornexa`**
      (si no, no podrá leer ni escribir ahí).
    - Copiar el "Bot User OAuth Token" (empieza por `xoxb-`) → `SLACK_BOT_TOKEN`.
+   - Copiar "Signing Secret" desde Basic Information → `SLACK_SIGNING_SECRET`.
 3. **Token de GitHub de solo lectura + comentario**, limitado al repo `Fornexa`:
    - GitHub → Settings → Developer settings → Fine-grained tokens → New token.
    - Repository access: solo `fragonh2-boop/Fornexa`.
@@ -42,12 +43,34 @@ literalmente:
 DEEPSEEK — ACCIÓN REQUERIDA
 ...
 PR #<número>
+Repo: fragonh2-boop/Fornexa
+HEAD: `<sha exacto>`
 ```
 
 Es la misma convención que ya usáis entre GPT y Claude (`CLAUDE — ACCIÓN
 REQUERIDA`), así que basta con que GPT (o Fran) escriba ese marcador cuando
 un cambio sea CRÍTICO y queráis su segunda opinión. El agente responde con
 `DEEPSEEK — REVISIÓN` en el mismo canal, en formato MUST/SHOULD/NICE.
+
+## Recepción inmediata y segura con Slack Events
+
+El camino principal es un POST de Slack Events a:
+
+```
+https://fornexa-ai-reviewer.onrender.com/slack/events
+```
+
+En la app de Slack, activa **Event Subscriptions**, usa esa Request URL y
+suscribe el evento de bot `message.channels`. El endpoint:
+
+- verifica la firma HMAC y rechaza peticiones con más de cinco minutos;
+- ignora mensajes de bots, subtipos y canales distintos de `#fornexa`;
+- responde `2xx` inmediatamente y revisa en segundo plano;
+- compara el HEAD solicitado con el actual antes de gastar una llamada al modelo.
+
+El sondeo cada cinco minutos se mantiene como respaldo. Cuando Render duerme
+el Web Service gratuito, un evento entrante lo despierta; los reintentos de
+Slack y el sondeo inicial permiten recuperar el handoff durante ese arranque.
 
 ## Límites duros (no son solo instrucciones de prompt)
 
@@ -71,15 +94,14 @@ npm run run-once       # una sola pasada, útil para probar
 
 ## Despliegue en Render
 
-El repo incluye `render.yaml` (Background Worker). En el dashboard de Render:
-"New" → "Blueprint" → seleccionar este repo → rellenar como *secret* las tres
-variables marcadas `sync: false` (`DEEPSEEK_API_KEY`, `SLACK_BOT_TOKEN`,
-`GITHUB_TOKEN`). El resto ya viene con los valores por defecto de Fornexa.
+El repo incluye `render.yaml` como Web Service gratuito. En el dashboard de
+Render: "New" → "Blueprint" → seleccionar este repo → rellenar como *secret*
+las cuatro variables marcadas `sync: false` (`DEEPSEEK_API_KEY`,
+`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `GITHUB_TOKEN`). El resto ya viene
+con los valores por defecto de Fornexa.
 
 ## Qué falta (siguientes iteraciones, no bloquean el arranque)
 
-- Pasar de sondeo por *polling* a Slack Events API (respuesta inmediata en
-  vez de esperar al siguiente ciclo).
 - Añadir lectura de solo-lectura de Vercel/Supabase cuando el rol lo necesite
   (hoy el agente solo mira GitHub).
 - Convención de mensaje específica para el modo ÁRBITRO (que GPT incluya el
