@@ -37,12 +37,29 @@ export async function getPRContext(prNumber: number): Promise<PRContext> {
     per_page: 100,
   });
 
-  const checkRuns = await octokit.checks.listForRef({
-    owner,
-    repo,
-    ref: pr.head.sha,
-    per_page: 100,
-  });
+  // La API de Checks requiere el permiso "Checks" del token, que los tokens
+  // fine-grained de GitHub no siempre exponen como ámbito seleccionable (solo
+  // "Commit statuses"). Si el token no tiene acceso, no debe tumbar toda la
+  // revisión: simplemente se informa de que no hay checks disponibles.
+  let checks: PRContext["checks"] = [];
+  try {
+    const checkRuns = await octokit.checks.listForRef({
+      owner,
+      repo,
+      ref: pr.head.sha,
+      per_page: 100,
+    });
+    checks = checkRuns.data.check_runs.map((c) => ({
+      name: c.name,
+      status: c.status,
+      conclusion: c.conclusion,
+    }));
+  } catch (err) {
+    console.warn(
+      `Aviso: no se pudieron leer los checks del HEAD ${pr.head.sha} (posible falta de permiso "Checks" en el token). Se continúa sin ese dato.`,
+      (err as Error).message
+    );
+  }
 
   return {
     number: prNumber,
@@ -51,11 +68,7 @@ export async function getPRContext(prNumber: number): Promise<PRContext> {
     baseSha: pr.base.sha,
     diffText,
     changedFiles: files.map((f) => f.filename),
-    checks: checkRuns.data.check_runs.map((c) => ({
-      name: c.name,
-      status: c.status,
-      conclusion: c.conclusion,
-    })),
+    checks,
   };
 }
 
