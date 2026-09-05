@@ -1,8 +1,9 @@
 services:
-  - type: worker
+  - type: web
     name: fornexa-ai-reviewer
     runtime: node
-    plan: starter
+    plan: free
+    healthCheckPath: /
     buildCommand: npm install && npm run build
     startCommand: npm start
     envVars:
@@ -11,6 +12,8 @@ services:
       - key: DEEPSEEK_MODEL
         value: deepseek-chat
       - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_SIGNING_SECRET
         sync: false
       - key: SLACK_CHANNEL_ID
         value: C0BT661FYLW
