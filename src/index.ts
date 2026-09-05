@@ -57,9 +57,16 @@ async function main(): Promise<void> {
     startHealthServer();
   }
 
-  await tick();
+  if (runOnce) {
+    await tick();
+    return;
+  }
 
-  if (runOnce) return;
+  // Igual que en los sondeos periódicos: un fallo en este primer ciclo
+  // (p.ej. una clave de DeepSeek inválida, o un error puntual de red) no
+  // debe tumbar todo el proceso — Render interpretaría la salida inmediata
+  // como un despliegue fallido. Solo se registra y se sigue sondeando.
+  tick().catch((err) => console.error("Error en el primer ciclo de sondeo:", err));
 
   const intervalMs = config.pollIntervalMinutes * 60 * 1000;
   console.log(`Sondeando #fornexa cada ${config.pollIntervalMinutes} minuto(s)...`);
