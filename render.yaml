@@ -1,0 +1,26 @@
+services:
+  - type: worker
+    name: fornexa-ai-reviewer
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_CHANNEL_ID
+        value: C0BT661FYLW
+      - key: SLACK_AGENT_LABEL
+        value: DEEPSEEK
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_OWNER
+        value: fragonh2-boop
+      - key: GITHUB_REPO
+        value: Fornexa
+      - key: POLL_INTERVAL_MINUTES
+        value: "5"
