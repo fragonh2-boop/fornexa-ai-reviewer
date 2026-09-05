@@ -1,0 +1,67 @@
+import { WebClient } from "@slack/web-api";
+import { config } from "../config.js";
+
+const slack = new WebClient(config.slack.botToken);
+
+export interface SlackMessage {
+  ts: string;
+  text: string;
+  user?: string;
+}
+
+/**
+ * Lee el historial reciente de #fornexa (por defecto ~200 mensajes,
+ * suficiente para cubrir el intervalo entre dos pasadas del poller).
+ */
+export async function readRecentHistory(limit = 200): Promise<SlackMessage[]> {
+  const result = await slack.conversations.history({
+    channel: config.slack.channelId,
+    limit,
+  });
+  return (result.messages ?? []).map((m) => ({
+    ts: m.ts ?? "",
+    text: m.text ?? "",
+    user: m.user,
+  }));
+}
+
+/**
+ * Busca el handoff más reciente dirigido a esta IA que todavía no tiene
+ * respuesta posterior con la misma etiqueta.
+ *
+ * Convención (a acordar con GPT/Claude, igual que ya usan entre ellos):
+ *   "DEEPSEEK — ACCIÓN REQUERIDA" ... "PR #<numero>" ... HEAD `<sha>`
+ *
+ * Los mensajes de Slack llegan en orden inverso (más nuevo primero).
+ */
+export function findPendingHandoff(
+  messages: SlackMessage[],
+  agentLabel: string
+): { prNumber: number; raw: SlackMessage } | null {
+  const requestMarker = `${agentLabel} — ACCIÓN REQUERIDA`;
+  const responseMarker = `${agentLabel} — `;
+
+  for (const msg of messages) {
+    if (msg.text.includes(requestMarker)) {
+      // ¿Hay ya una respuesta de esta IA con timestamp posterior?
+      const alreadyAnswered = messages.some(
+        (other) => other.ts > msg.ts && other.text.startsWith(responseMarker)
+      );
+      if (alreadyAnswered) continue;
+
+      const prMatch = msg.text.match(/PR\s*#(\d+)/i);
+      if (!prMatch) continue;
+
+      return { prNumber: Number(prMatch[1]), raw: msg };
+    }
+  }
+  return null;
+}
+
+export async function postToChannel(text: string): Promise<void> {
+  await slack.chat.postMessage({
+    channel: config.slack.channelId,
+    text,
+    unfurl_links: false,
+  });
+}
