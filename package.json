@@ -1,0 +1,28 @@
+{
+  "name": "fornexa-ai-reviewer",
+  "version": "0.1.0",
+  "description": "Agente independiente (DeepSeek) para segunda revision, arbitraje y tareas delegadas en el flujo de desarrollo de Fornexa. Solo lectura sobre GitHub; nunca fusiona ni despliega.",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "run-once": "tsx src/index.ts --once"
+  },
+  "dependencies": {
+    "@octokit/rest": "^21.0.2",
+    "@slack/web-api": "^7.8.0",
+    "dotenv": "^16.4.5",
+    "openai": "^4.68.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
