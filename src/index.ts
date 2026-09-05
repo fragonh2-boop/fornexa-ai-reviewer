@@ -1,7 +1,28 @@
+import http from "node:http";
 import { config } from "./config.js";
 import { readRecentHistory, findPendingHandoff, postToChannel } from "./tools/slack.js";
 import { getPRContext } from "./tools/github.js";
 import { reviewPR } from "./deepseek.js";
+
+/**
+ * Este proceso no necesita recibir tráfico de nadie: solo sondea Slack por su
+ * cuenta. Pero al desplegarlo como "web service" en Render (para poder usar
+ * el plan gratuito, que los "background workers" no ofrecen) Render espera
+ * que abra un puerto; si no lo hace, marca el despliegue como fallido tras
+ * un rato aunque el proceso siga vivo. Este servidor HTTP mínimo solo existe
+ * para satisfacer esa comprobación de plataforma — no expone ninguna acción.
+ */
+function startHealthServer(): void {
+  const port = Number(process.env.PORT) || 10000;
+  http
+    .createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("fornexa-ai-reviewer: vivo, sondeando Slack en segundo plano.\n");
+    })
+    .listen(port, () => {
+      console.log(`Servidor de health-check escuchando en el puerto ${port} (solo para Render).`);
+    });
+}
 
 async function tick(): Promise<void> {
   const messages = await readRecentHistory();
@@ -31,6 +52,10 @@ async function tick(): Promise<void> {
 
 async function main(): Promise<void> {
   const runOnce = process.argv.includes("--once");
+
+  if (!runOnce) {
+    startHealthServer();
+  }
 
   await tick();
 
