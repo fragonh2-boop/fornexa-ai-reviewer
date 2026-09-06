@@ -1,18 +1,33 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
-import { readRecentHistory, findPendingHandoff, postToChannel } from "./tools/slack.js";
-import { getPRContext } from "./tools/github.js";
-import { reviewPR } from "./deepseek.js";
 import {
+  readRecentHistory,
+  findPendingHandoff,
+  postToChannel,
+  postToThread,
+  readThread,
+  type SlackMessage,
+} from "./tools/slack.js";
+import { getPRContext } from "./tools/github.js";
+import { reviewPR, runContextOnboarding } from "./deepseek.js";
+import {
+  extractHumanMessage,
   extractReviewRequest,
   parseSlackEnvelope,
   verifySlackSignature,
 } from "./slack-events.js";
 import type { ReviewRequest } from "./review-request.js";
+import {
+  buildContextFromThread,
+  CONTEXT_MARKER,
+  CONTEXT_RESPONSE_MARKER,
+  isContextReadyMessage,
+} from "./context-onboarding.js";
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const MAX_REMEMBERED_EVENT_IDS = 1000;
 const inFlightReviews = new Set<string>();
+const inFlightContextThreads = new Set<string>();
 const processedEventIds = new Set<string>();
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -82,16 +97,78 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
   }
 }
 
+async function processContextThread(threadTs: string, expectedAuthor: string): Promise<void> {
+  if (inFlightContextThreads.has(threadTs)) {
+    console.log(`[${new Date().toISOString()}] Contexto ${threadTs} ya está en curso; se omite.`);
+    return;
+  }
+
+  inFlightContextThreads.add(threadTs);
+  try {
+    const messages = await readThread(threadTs);
+    if (messages.some((message) => message.text.startsWith(CONTEXT_RESPONSE_MARKER))) {
+      console.log(`[${new Date().toISOString()}] El contexto ${threadTs} ya tiene respuesta.`);
+      return;
+    }
+
+    const built = buildContextFromThread(messages, expectedAuthor);
+    if (!built.ok) {
+      await postToThread(
+        `${config.slack.agentLabel} — CONTEXTO NO PROCESADO\n\n${built.error}`,
+        threadTs
+      );
+      console.log(`[${new Date().toISOString()}] Contexto ${threadTs} rechazado: ${built.error}`);
+      return;
+    }
+
+    console.log(
+      `[${new Date().toISOString()}] Procesando ${built.packageCount} paquetes de contexto del hilo ${threadTs}.`
+    );
+    const response = await runContextOnboarding(built.context);
+    await postToThread(response, threadTs);
+    console.log(`[${new Date().toISOString()}] Preguntas de contexto publicadas en ${threadTs}.`);
+  } finally {
+    inFlightContextThreads.delete(threadTs);
+  }
+}
+
+async function findPendingContextThread(messages: SlackMessage[]): Promise<{
+  threadTs: string;
+  author: string;
+} | null> {
+  const roots = messages.filter(
+    (message) =>
+      message.text.startsWith(CONTEXT_MARKER) &&
+      !message.threadTs &&
+      typeof message.user === "string"
+  );
+
+  for (const root of roots) {
+    const thread = await readThread(root.ts);
+    if (thread.some((message) => message.text.startsWith(CONTEXT_RESPONSE_MARKER))) continue;
+    const built = buildContextFromThread(thread, root.user!);
+    if (built.ok) return { threadTs: root.ts, author: root.user! };
+  }
+
+  return null;
+}
+
 async function tick(): Promise<void> {
   const messages = await readRecentHistory();
   const pending = findPendingHandoff(messages, config.slack.agentLabel);
 
-  if (!pending) {
-    console.log(`[${new Date().toISOString()}] Sin handoffs pendientes para ${config.slack.agentLabel}.`);
+  if (pending) {
+    await processReviewRequest(pending);
     return;
   }
 
-  await processReviewRequest(pending);
+  const pendingContext = await findPendingContextThread(messages);
+  if (pendingContext) {
+    await processContextThread(pendingContext.threadTs, pendingContext.author);
+    return;
+  }
+
+  console.log(`[${new Date().toISOString()}] Sin handoffs pendientes para ${config.slack.agentLabel}.`);
 }
 
 async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -135,6 +212,17 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   sendJson(res, 200, { ok: true });
 
   if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
+  const humanMessage = extractHumanMessage(envelope, config.slack.channelId);
+  if (humanMessage && isContextReadyMessage(humanMessage.text)) {
+    const threadTs = humanMessage.threadTs ?? humanMessage.ts;
+    setImmediate(() => {
+      processContextThread(threadTs, humanMessage.user).catch((err) =>
+        console.error("Error procesando el contexto de Slack:", err)
+      );
+    });
+    return;
+  }
+
   const request = extractReviewRequest(
     envelope,
     config.slack.channelId,

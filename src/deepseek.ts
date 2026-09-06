@@ -3,11 +3,32 @@ import type { ChatCompletionTool, ChatCompletionMessageParam } from "openai/reso
 import { config } from "./config.js";
 import { getFullFileAtRef, type PRContext } from "./tools/github.js";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";
+import { ensureContextResponseMarker } from "./context-onboarding.js";
 
 const client = new OpenAI({
   apiKey: config.deepseek.apiKey,
   baseURL: config.deepseek.baseURL,
 });
+
+const CONTEXT_ONBOARDING_SYSTEM_PROMPT = `Eres DeepSeek, tercera IA técnica del proyecto FORNEXA.
+Vas a recibir un documento de incorporación preparado por GPT y publicado por una persona autorizada en Slack.
+
+Esta es una fase de adquisición de contexto, no una revisión del producto. Tu única tarea es formular preguntas que reduzcan incertidumbre antes de colaborar.
+
+Reglas obligatorias:
+- No analices, valores, recomiendes ni critiques FORNEXA todavía.
+- No emitas conclusiones legales ni técnicas.
+- No propongas código, arquitectura ni soluciones.
+- No repitas ni resumas el documento salvo una frase mínima necesaria para contextualizar una pregunta.
+- Pregunta por lagunas verificables de negocio, usuarios, operaciones, normativa, evidencia, infraestructura, seguridad, despliegue, datos, integraciones y gobernanza entre GPT, Claude y DeepSeek.
+- Si una conexión adicional puede ser útil, pregunta por ella e indica qué evidencia permitiría consultar; no solicites secretos, tokens, contraseñas ni valores sensibles.
+- Separa las preguntas en P0 (imprescindibles), P1 (importantes) y P2 (deseables).
+- Formula preguntas concretas, numeradas y contestables. Evita duplicados.
+- Termina indicando qué artefactos o accesos de solo lectura aportarían mayor contexto, sin afirmar que ya existen.
+- Escribe en español.
+
+La primera línea de tu respuesta debe ser exactamente:
+DEEPSEEK — FASE 0: PREGUNTAS PARA COMPLETAR CONTEXTO`;
 
 // Únicas herramientas expuestas al modelo: lectura de un fichero completo.
 // Deliberadamente NO existe ninguna tool de escritura/merge/deploy: el modelo
@@ -95,4 +116,23 @@ export async function reviewPR(
   }
 
   return "(se alcanzó el límite de rondas de herramientas sin veredicto final; revisar manualmente)";
+}
+
+export async function runContextOnboarding(context: string): Promise<string> {
+  const completion = await client.chat.completions.create({
+    model: config.deepseek.model,
+    messages: [
+      { role: "system", content: CONTEXT_ONBOARDING_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: `Documento de incorporación de FORNEXA:\n\n${context}`,
+      },
+    ],
+    temperature: 0.15,
+    max_tokens: 8000,
+  });
+
+  return ensureContextResponseMarker(
+    completion.choices[0]?.message.content ?? "(el modelo no devolvió contenido)"
+  );
 }

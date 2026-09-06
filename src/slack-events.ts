@@ -13,7 +13,18 @@ export interface SlackEventsEnvelope {
     channel?: string;
     text?: string;
     bot_id?: string;
+    user?: string;
+    ts?: string;
+    thread_ts?: string;
   };
+}
+
+export interface SlackHumanMessageEvent {
+  channel: string;
+  text: string;
+  user: string;
+  ts: string;
+  threadTs?: string;
 }
 
 export function verifySlackSignature(params: {
@@ -56,6 +67,14 @@ export function extractReviewRequest(
   expectedChannel: string,
   agentLabel: string
 ): ReviewRequest | null {
+  const event = extractHumanMessage(envelope, expectedChannel);
+  return event ? parseReviewRequest(event.text, agentLabel) : null;
+}
+
+export function extractHumanMessage(
+  envelope: SlackEventsEnvelope,
+  expectedChannel: string
+): SlackHumanMessageEvent | null {
   if (envelope.type !== "event_callback") return null;
   const event = envelope.event;
   if (
@@ -64,10 +83,18 @@ export function extractReviewRequest(
     event.subtype ||
     event.bot_id ||
     event.channel !== expectedChannel ||
-    typeof event.text !== "string"
+    typeof event.text !== "string" ||
+    typeof event.user !== "string" ||
+    typeof event.ts !== "string"
   ) {
     return null;
   }
 
-  return parseReviewRequest(event.text, agentLabel);
+  return {
+    channel: event.channel,
+    text: event.text,
+    user: event.user,
+    ts: event.ts,
+    threadTs: event.thread_ts,
+  };
 }
