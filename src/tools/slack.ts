@@ -45,12 +45,21 @@ export async function readRecentHistory(limit = 200): Promise<SlackMessage[]> {
 }
 
 export async function readThread(threadTs: string): Promise<SlackMessage[]> {
-  const result = await slack.conversations.replies({
-    channel: config.slack.channelId,
-    ts: threadTs,
-    limit: 100,
-  });
-  return (result.messages ?? []).map(toSlackMessage);
+  const messages: SlackMessage[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const result = await slack.conversations.replies({
+      channel: config.slack.channelId,
+      ts: threadTs,
+      limit: 200,
+      cursor,
+    });
+    messages.push(...(result.messages ?? []).map(toSlackMessage));
+    cursor = result.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  return messages;
 }
 
 /**

@@ -97,7 +97,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
   }
 }
 
-async function processContextThread(threadTs: string, expectedAuthor: string): Promise<void> {
+async function processContextThread(threadTs: string): Promise<void> {
   if (inFlightContextThreads.has(threadTs)) {
     console.log(`[${new Date().toISOString()}] Contexto ${threadTs} ya está en curso; se omite.`);
     return;
@@ -106,12 +106,20 @@ async function processContextThread(threadTs: string, expectedAuthor: string): P
   inFlightContextThreads.add(threadTs);
   try {
     const messages = await readThread(threadTs);
+    const root = messages.find((message) => message.ts === threadTs);
+    if (!root?.user || root.botId) {
+      await postToThread(
+        `${config.slack.agentLabel} — CONTEXTO NO PROCESADO\n\nNo se ha podido verificar un autor humano para el mensaje raíz.`,
+        threadTs
+      );
+      return;
+    }
     if (messages.some((message) => message.text.startsWith(CONTEXT_RESPONSE_MARKER))) {
       console.log(`[${new Date().toISOString()}] El contexto ${threadTs} ya tiene respuesta.`);
       return;
     }
 
-    const built = buildContextFromThread(messages, expectedAuthor);
+    const built = buildContextFromThread(messages, root.user);
     if (!built.ok) {
       await postToThread(
         `${config.slack.agentLabel} — CONTEXTO NO PROCESADO\n\n${built.error}`,
@@ -134,12 +142,12 @@ async function processContextThread(threadTs: string, expectedAuthor: string): P
 
 async function findPendingContextThread(messages: SlackMessage[]): Promise<{
   threadTs: string;
-  author: string;
 } | null> {
   const roots = messages.filter(
     (message) =>
       message.text.startsWith(CONTEXT_MARKER) &&
       !message.threadTs &&
+      !message.botId &&
       typeof message.user === "string"
   );
 
@@ -147,7 +155,7 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
     const thread = await readThread(root.ts);
     if (thread.some((message) => message.text.startsWith(CONTEXT_RESPONSE_MARKER))) continue;
     const built = buildContextFromThread(thread, root.user!);
-    if (built.ok) return { threadTs: root.ts, author: root.user! };
+    if (built.ok) return { threadTs: root.ts };
   }
 
   return null;
@@ -164,7 +172,7 @@ async function tick(): Promise<void> {
 
   const pendingContext = await findPendingContextThread(messages);
   if (pendingContext) {
-    await processContextThread(pendingContext.threadTs, pendingContext.author);
+    await processContextThread(pendingContext.threadTs);
     return;
   }
 
@@ -216,7 +224,7 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   if (humanMessage && isContextReadyMessage(humanMessage.text)) {
     const threadTs = humanMessage.threadTs ?? humanMessage.ts;
     setImmediate(() => {
-      processContextThread(threadTs, humanMessage.user).catch((err) =>
+      processContextThread(threadTs).catch((err) =>
         console.error("Error procesando el contexto de Slack:", err)
       );
     });
