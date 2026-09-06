@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildContextFromThread,
+  contextAuthorKey,
   containsPotentialSecret,
   CONTEXT_MARKER,
   CONTEXT_PROCESS_COMMAND,
@@ -23,7 +24,7 @@ test("reconstruye paquetes completos en orden numérico", () => {
       { ts: "2", user: "U1", text: packageText(2, 2, "Segundo", true) },
       { ts: "1", user: "U1", text: packageText(1, 2, "Primero") },
     ],
-    "U1"
+    "user:U1"
   );
 
   assert.deepEqual(result, { ok: true, context: "Primero\n\nSegundo", packageCount: 2 });
@@ -35,17 +36,30 @@ test("acepta paquetes atribuidos al mismo usuario mediante una app autorizada", 
       { ts: "1", user: "U1", botId: "BAPP", text: packageText(1, 2, "Primero") },
       { ts: "2", user: "U1", botId: "BAPP", text: packageText(2, 2, "Segundo", true) },
     ],
-    "U1"
+    "user:U1"
   );
 
   assert.equal(result.ok, true);
+});
+
+test("reconstruye paquetes de una app cuando Slack no expone user", () => {
+  const result = buildContextFromThread(
+    [
+      { ts: "1", botId: "BAPP", text: packageText(1, 2, "Primero") },
+      { ts: "2", botId: "BAPP", text: packageText(2, 2, "Segundo", true) },
+    ],
+    "bot:BAPP"
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(contextAuthorKey({ ts: "1", text: "x" }), null);
 });
 
 test("rechaza paquetes incompletos, autores distintos y secretos", () => {
   assert.equal(
     buildContextFromThread(
       [{ ts: "1", user: "U1", text: packageText(1, 2, "Primero") }],
-      "U1"
+      "user:U1"
     ).ok,
     false
   );
@@ -55,14 +69,14 @@ test("rechaza paquetes incompletos, autores distintos y secretos", () => {
         { ts: "1", user: "U1", text: packageText(1, 2, "Primero") },
         { ts: "2", user: "U2", text: packageText(2, 2, "Segundo", true) },
       ],
-      "U1"
+      "user:U1"
     ).ok,
     false
   );
   assert.equal(
     buildContextFromThread(
       [{ ts: "1", user: "U1", text: packageText(1, 1, "Token sk-abcdefghijklmnopqrstuv", true) }],
-      "U1"
+      "user:U1"
     ).ok,
     false
   );

@@ -19,6 +19,12 @@ export interface ContextPackage {
   body: string;
 }
 
+export function contextAuthorKey(message: ContextThreadMessage): string | null {
+  if (message.user) return `user:${message.user}`;
+  if (message.botId) return `bot:${message.botId}`;
+  return null;
+}
+
 export type ContextBuildResult =
   | { ok: true; context: string; packageCount: number }
   | { ok: false; error: string };
@@ -86,7 +92,7 @@ export function containsPotentialSecret(text: string): boolean {
 
 export function buildContextFromThread(
   messages: ContextThreadMessage[],
-  expectedAuthor: string
+  expectedAuthorKey: string
 ): ContextBuildResult {
   const parsed = messages
     .map((message) => ({ message, package: parseContextPackage(message.text) }))
@@ -98,7 +104,7 @@ export function buildContextFromThread(
   if (parsed.length === 0) {
     return { ok: false, error: "El hilo no contiene paquetes de contexto reconocibles." };
   }
-  if (parsed.some(({ message }) => message.user !== expectedAuthor)) {
+  if (parsed.some(({ message }) => contextAuthorKey(message) !== expectedAuthorKey)) {
     return { ok: false, error: "Todos los paquetes deben proceder del mismo autor de Slack." };
   }
 

@@ -19,6 +19,7 @@ import {
 import type { ReviewRequest } from "./review-request.js";
 import {
   buildContextFromThread,
+  contextAuthorKey,
   CONTEXT_MARKER,
   CONTEXT_RESPONSE_MARKER,
   isContextReadyMessage,
@@ -107,7 +108,8 @@ async function processContextThread(threadTs: string): Promise<void> {
   try {
     const messages = await readThread(threadTs);
     const root = messages.find((message) => message.ts === threadTs);
-    if (!root?.user) {
+    const authorKey = root ? contextAuthorKey(root) : null;
+    if (!authorKey) {
       await postToThread(
         `${config.slack.agentLabel} — CONTEXTO NO PROCESADO\n\nNo se ha podido verificar el autor de Slack del mensaje raíz.`,
         threadTs
@@ -119,7 +121,7 @@ async function processContextThread(threadTs: string): Promise<void> {
       return;
     }
 
-    const built = buildContextFromThread(messages, root.user);
+    const built = buildContextFromThread(messages, authorKey);
     if (!built.ok) {
       await postToThread(
         `${config.slack.agentLabel} — CONTEXTO NO PROCESADO\n\n${built.error}`,
@@ -147,13 +149,13 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
     (message) =>
       message.text.startsWith(CONTEXT_MARKER) &&
       !message.threadTs &&
-      typeof message.user === "string"
+      contextAuthorKey(message) !== null
   );
 
   for (const root of roots) {
     const thread = await readThread(root.ts);
     if (thread.some((message) => message.text.startsWith(CONTEXT_RESPONSE_MARKER))) continue;
-    const built = buildContextFromThread(thread, root.user!);
+    const built = buildContextFromThread(thread, contextAuthorKey(root)!);
     if (built.ok) return { threadTs: root.ts };
   }
 
