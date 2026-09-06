@@ -98,8 +98,8 @@ export function buildContextFromThread(
   if (parsed.length === 0) {
     return { ok: false, error: "El hilo no contiene paquetes de contexto reconocibles." };
   }
-  if (parsed.some(({ message }) => message.botId || message.user !== expectedAuthor)) {
-    return { ok: false, error: "Todos los paquetes deben proceder del mismo autor humano." };
+  if (parsed.some(({ message }) => message.user !== expectedAuthor)) {
+    return { ok: false, error: "Todos los paquetes deben proceder del mismo autor de Slack." };
   }
 
   const totals = new Set(parsed.map(({ package: item }) => item.total));

@@ -81,8 +81,9 @@ publicado en un único hilo de Slack. Cada mensaje debe comenzar por
 `DEEPSEEK — PROCESAR CONTEXTO FORNEXA` dentro del hilo, el servicio:
 
 - recupera el hilo completo y exige todos los paquetes, sin duplicados;
-- comprueba que proceden de un único autor humano y limita el contexto a
-  20 paquetes y 64 KiB;
+- comprueba que proceden de un único autor atribuido por Slack —también si
+  una app autorizada publica en su nombre— y limita el contexto a 20 paquetes
+  y 64 KiB;
 - rechaza patrones evidentes de credenciales o claves privadas;
 - pide al modelo únicamente preguntas P0/P1/P2 para completar su contexto,
   sin análisis ni recomendaciones iniciales;

@@ -32,16 +32,22 @@ function toSlackMessage(message: {
   };
 }
 
-/**
- * Lee el historial reciente de #fornexa (por defecto ~200 mensajes,
- * suficiente para cubrir el intervalo entre dos pasadas del poller).
- */
-export async function readRecentHistory(limit = 200): Promise<SlackMessage[]> {
-  const result = await slack.conversations.history({
-    channel: config.slack.channelId,
-    limit,
-  });
-  return (result.messages ?? []).map(toSlackMessage);
+/** Lee hasta maxMessages raíces recientes, paginando para recuperar handoffs antiguos. */
+export async function readRecentHistory(maxMessages = 1000): Promise<SlackMessage[]> {
+  const messages: SlackMessage[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const result = await slack.conversations.history({
+      channel: config.slack.channelId,
+      limit: Math.min(200, maxMessages - messages.length),
+      cursor,
+    });
+    messages.push(...(result.messages ?? []).map(toSlackMessage));
+    cursor = result.response_metadata?.next_cursor || undefined;
+  } while (cursor && messages.length < maxMessages);
+
+  return messages.slice(0, maxMessages);
 }
 
 export async function readThread(threadTs: string): Promise<SlackMessage[]> {
