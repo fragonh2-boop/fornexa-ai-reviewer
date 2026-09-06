@@ -107,9 +107,9 @@ async function processContextThread(threadTs: string): Promise<void> {
   try {
     const messages = await readThread(threadTs);
     const root = messages.find((message) => message.ts === threadTs);
-    if (!root?.user || root.botId) {
+    if (!root?.user) {
       await postToThread(
-        `${config.slack.agentLabel} — CONTEXTO NO PROCESADO\n\nNo se ha podido verificar un autor humano para el mensaje raíz.`,
+        `${config.slack.agentLabel} — CONTEXTO NO PROCESADO\n\nNo se ha podido verificar el autor de Slack del mensaje raíz.`,
         threadTs
       );
       return;
@@ -147,7 +147,6 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
     (message) =>
       message.text.startsWith(CONTEXT_MARKER) &&
       !message.threadTs &&
-      !message.botId &&
       typeof message.user === "string"
   );
 

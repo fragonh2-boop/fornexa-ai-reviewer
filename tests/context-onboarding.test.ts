@@ -29,6 +29,18 @@ test("reconstruye paquetes completos en orden numérico", () => {
   assert.deepEqual(result, { ok: true, context: "Primero\n\nSegundo", packageCount: 2 });
 });
 
+test("acepta paquetes atribuidos al mismo usuario mediante una app autorizada", () => {
+  const result = buildContextFromThread(
+    [
+      { ts: "1", user: "U1", botId: "BAPP", text: packageText(1, 2, "Primero") },
+      { ts: "2", user: "U1", botId: "BAPP", text: packageText(2, 2, "Segundo", true) },
+    ],
+    "U1"
+  );
+
+  assert.equal(result.ok, true);
+});
+
 test("rechaza paquetes incompletos, autores distintos y secretos", () => {
   assert.equal(
     buildContextFromThread(
