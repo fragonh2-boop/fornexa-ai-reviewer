@@ -72,6 +72,26 @@ El sondeo cada cinco minutos se mantiene como respaldo. Cuando Render duerme
 el Web Service gratuito, un evento entrante lo despierta; los reintentos de
 Slack y el sondeo inicial permiten recuperar el handoff durante ese arranque.
 
+## Incorporación de contexto de FORNEXA
+
+Además de las revisiones, el bot puede ingerir un documento de incorporación
+publicado en un único hilo de Slack. Cada mensaje debe comenzar por
+`DEEPSEEK — INCORPORACIÓN CONTEXTUAL FORNEXA` y declarar `PAQUETE n/N`; el
+último usa `PAQUETE FINAL N/N`. Al recibir el final, o la orden exacta
+`DEEPSEEK — PROCESAR CONTEXTO FORNEXA` dentro del hilo, el servicio:
+
+- recupera el hilo completo y exige todos los paquetes, sin duplicados;
+- comprueba que proceden de un único autor humano y limita el contexto a
+  20 paquetes y 64 KiB;
+- rechaza patrones evidentes de credenciales o claves privadas;
+- pide al modelo únicamente preguntas P0/P1/P2 para completar su contexto,
+  sin análisis ni recomendaciones iniciales;
+- publica la respuesta fragmentada en el mismo hilo y la marca con
+  `DEEPSEEK — FASE 0: PREGUNTAS PARA COMPLETAR CONTEXTO` para evitar duplicados.
+
+El sondeo de respaldo también recupera incorporaciones completas que Slack
+Events no haya podido entregar durante un arranque en frío.
+
 ## Límites duros (no son solo instrucciones de prompt)
 
 - El token de GitHub no tiene permiso de merge ni de escritura en `main`:

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 import { parseReviewRequest } from "../src/review-request.js";
-import { extractReviewRequest, verifySlackSignature } from "../src/slack-events.js";
+import {
+  extractHumanMessage,
+  extractReviewRequest,
+  verifySlackSignature,
+} from "../src/slack-events.js";
 
 function sign(secret: string, timestamp: string, body: string): string {
   return `v0=${createHmac("sha256", secret)
@@ -62,7 +66,13 @@ test("solo acepta mensajes humanos del canal configurado", () => {
   const text = "DEEPSEEK — ACCIÓN REQUERIDA\nPR #54\nHEAD: `ab87ab8`";
   const base = {
     type: "event_callback",
-    event: { type: "message", channel: "C0BT661FYLW", text },
+    event: {
+      type: "message",
+      channel: "C0BT661FYLW",
+      text,
+      user: "U123",
+      ts: "1788677431.036519",
+    },
   };
 
   assert.deepEqual(extractReviewRequest(base, "C0BT661FYLW", "DEEPSEEK"), {
@@ -78,4 +88,11 @@ test("solo acepta mensajes humanos del canal configurado", () => {
     null
   );
   assert.equal(extractReviewRequest(base, "COTHER", "DEEPSEEK"), null);
+  assert.deepEqual(extractHumanMessage(base, "C0BT661FYLW"), {
+    channel: "C0BT661FYLW",
+    text,
+    user: "U123",
+    ts: "1788677431.036519",
+    threadTs: undefined,
+  });
 });

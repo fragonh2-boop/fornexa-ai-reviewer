@@ -1,5 +1,6 @@
 import { WebClient } from "@slack/web-api";
 import { config } from "../config.js";
+import { splitSlackText } from "../context-onboarding.js";
 import { parseReviewRequest } from "../review-request.js";
 
 const slack = new WebClient(config.slack.botToken);
@@ -8,6 +9,27 @@ export interface SlackMessage {
   ts: string;
   text: string;
   user?: string;
+  botId?: string;
+  threadTs?: string;
+  replyCount?: number;
+}
+
+function toSlackMessage(message: {
+  ts?: string;
+  text?: string;
+  user?: string;
+  bot_id?: string;
+  thread_ts?: string;
+  reply_count?: number;
+}): SlackMessage {
+  return {
+    ts: message.ts ?? "",
+    text: message.text ?? "",
+    user: message.user,
+    botId: message.bot_id,
+    threadTs: message.thread_ts,
+    replyCount: message.reply_count,
+  };
 }
 
 /**
@@ -19,11 +41,25 @@ export async function readRecentHistory(limit = 200): Promise<SlackMessage[]> {
     channel: config.slack.channelId,
     limit,
   });
-  return (result.messages ?? []).map((m) => ({
-    ts: m.ts ?? "",
-    text: m.text ?? "",
-    user: m.user,
-  }));
+  return (result.messages ?? []).map(toSlackMessage);
+}
+
+export async function readThread(threadTs: string): Promise<SlackMessage[]> {
+  const messages: SlackMessage[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const result = await slack.conversations.replies({
+      channel: config.slack.channelId,
+      ts: threadTs,
+      limit: 200,
+      cursor,
+    });
+    messages.push(...(result.messages ?? []).map(toSlackMessage));
+    cursor = result.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  return messages;
 }
 
 /**
@@ -65,4 +101,17 @@ export async function postToChannel(text: string): Promise<void> {
     text,
     unfurl_links: false,
   });
+}
+
+export async function postToThread(text: string, threadTs: string): Promise<void> {
+  const chunks = splitSlackText(text);
+  for (let index = 0; index < chunks.length; index++) {
+    const suffix = chunks.length > 1 ? `\n\n_Respuesta ${index + 1}/${chunks.length}_` : "";
+    await slack.chat.postMessage({
+      channel: config.slack.channelId,
+      thread_ts: threadTs,
+      text: `${chunks[index]}${suffix}`,
+      unfurl_links: false,
+    });
+  }
 }
