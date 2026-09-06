@@ -10,6 +10,7 @@ export interface ContextThreadMessage {
   text: string;
   user?: string;
   botId?: string;
+  threadTs?: string;
 }
 
 export interface ContextPackage {
@@ -23,6 +24,10 @@ export function contextAuthorKey(message: ContextThreadMessage): string | null {
   if (message.user) return `user:${message.user}`;
   if (message.botId) return `bot:${message.botId}`;
   return null;
+}
+
+export function isContextThreadRoot(message: ContextThreadMessage): boolean {
+  return !message.threadTs || message.threadTs === message.ts;
 }
 
 export type ContextBuildResult =

@@ -10,6 +10,7 @@ import {
   ensureContextResponseMarker,
   isContextProcessCommand,
   isContextReadyMessage,
+  isContextThreadRoot,
   parseContextPackage,
   splitSlackText,
 } from "../src/context-onboarding.js";
@@ -89,6 +90,12 @@ test("reconoce exclusivamente el final o la orden exacta como disparador", () =>
   assert.equal(isContextProcessCommand(CONTEXT_PROCESS_COMMAND), true);
   assert.equal(isContextProcessCommand(`${CONTEXT_PROCESS_COMMAND} ahora`), false);
   assert.equal(parseContextPackage("texto cualquiera"), null);
+});
+
+test("reconoce una raíz aunque Slack repita su ts como thread_ts", () => {
+  assert.equal(isContextThreadRoot({ ts: "1", text: "x" }), true);
+  assert.equal(isContextThreadRoot({ ts: "1", threadTs: "1", text: "x" }), true);
+  assert.equal(isContextThreadRoot({ ts: "2", threadTs: "1", text: "x" }), false);
 });
 
 test("divide respuestas largas sin superar el máximo", () => {

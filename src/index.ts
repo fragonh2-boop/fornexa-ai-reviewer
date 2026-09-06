@@ -23,6 +23,7 @@ import {
   CONTEXT_MARKER,
   CONTEXT_RESPONSE_MARKER,
   isContextReadyMessage,
+  isContextThreadRoot,
 } from "./context-onboarding.js";
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
@@ -148,7 +149,7 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
   const roots = messages.filter(
     (message) =>
       message.text.startsWith(CONTEXT_MARKER) &&
-      !message.threadTs &&
+      isContextThreadRoot(message) &&
       contextAuthorKey(message) !== null
   );
 
