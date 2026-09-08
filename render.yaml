@@ -10,7 +10,7 @@ services:
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: DEEPSEEK_MODEL
-        value: deepseek-chat
+        value: deepseek-v4-pro
       - key: SLACK_BOT_TOKEN
         sync: false
       - key: SLACK_SIGNING_SECRET
