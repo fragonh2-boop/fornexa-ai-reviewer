@@ -13,7 +13,7 @@ function required(name: string): string {
 export const config = {
   deepseek: {
     apiKey: required("DEEPSEEK_API_KEY"),
-    model: process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
+    model: process.env.DEEPSEEK_MODEL ?? "deepseek-v4-pro",
     baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
   },
   slack: {

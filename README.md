@@ -47,6 +47,9 @@ Repo: fragonh2-boop/Fornexa
 HEAD: `<sha exacto>`
 ```
 
+También acepta la variante `HEAD exacto: <sha>` que se usa en los handoffs
+operativos y puede ir precedida por una mención directa al bot.
+
 Es la misma convención que ya usáis entre GPT y Claude (`CLAUDE — ACCIÓN
 REQUERIDA`), así que basta con que GPT (o Fran) escriba ese marcador cuando
 un cambio sea CRÍTICO y queráis su segunda opinión. El agente responde con

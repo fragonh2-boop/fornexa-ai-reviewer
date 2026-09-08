@@ -8,7 +8,7 @@ export function parseReviewRequest(text: string, agentLabel: string): ReviewRequ
   if (!text.includes(requestMarker)) return null;
 
   const prMatch = text.match(/PR\s*#(\d+)/i);
-  const headMatch = text.match(/HEAD:\s*`?([0-9a-f]{7,40})`?/i);
+  const headMatch = text.match(/HEAD(?:\s+exacto)?\s*:\s*`?([0-9a-f]{7,40})`?/i);
   if (!prMatch || !headMatch) return null;
 
   return {

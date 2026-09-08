@@ -62,6 +62,16 @@ test("extrae una solicitud solo cuando incluye PR y HEAD", () => {
   assert.equal(parseReviewRequest("DEEPSEEK — ACCIÓN REQUERIDA\nPR #54", "DEEPSEEK"), null);
 });
 
+test("acepta una mención con HEAD exacto como los triggers de Slack", () => {
+  const text =
+    "<@U0BV95NCT89|Fornexa DeepSeek Reviewer> DEEPSEEK — ACCIÓN REQUERIDA — RETRY\n\nPR #60\nHEAD exacto: 463a259166ccd31cfbbc73eb6835946fd3dd683e";
+
+  assert.deepEqual(parseReviewRequest(text, "DEEPSEEK"), {
+    prNumber: 60,
+    requestedHead: "463a259166ccd31cfbbc73eb6835946fd3dd683e",
+  });
+});
+
 test("solo acepta mensajes humanos del canal configurado", () => {
   const text = "DEEPSEEK — ACCIÓN REQUERIDA\nPR #54\nHEAD: `ab87ab8`";
   const base = {
