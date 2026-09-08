@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import { parseReviewRequest } from "../src/review-request.js";
+import { isReviewResponse, parseReviewRequest } from "../src/review-request.js";
 import {
   extractHumanMessage,
   extractReviewRequest,
@@ -70,6 +70,27 @@ test("acepta una mención con HEAD exacto como los triggers de Slack", () => {
     prNumber: 60,
     requestedHead: "463a259166ccd31cfbbc73eb6835946fd3dd683e",
   });
+});
+
+test("solo una revisión publicada por el bot cuenta como respuesta", () => {
+  assert.equal(
+    isReviewResponse(
+      { text: "DEEPSEEK — REVISIÓN\n\nMUST: ninguno", botId: "B123" },
+      "DEEPSEEK"
+    ),
+    true
+  );
+  assert.equal(
+    isReviewResponse(
+      { text: "DEEPSEEK — ACCIÓN REQUERIDA\n\nPR #60", botId: "BOTHER" },
+      "DEEPSEEK"
+    ),
+    false
+  );
+  assert.equal(
+    isReviewResponse({ text: "DEEPSEEK — REVISIÓN\n\ntexto humano" }, "DEEPSEEK"),
+    false
+  );
 });
 
 test("solo acepta mensajes humanos del canal configurado", () => {
