@@ -16,7 +16,7 @@ import {
   parseSlackEnvelope,
   verifySlackSignature,
 } from "./slack-events.js";
-import type { ReviewRequest } from "./review-request.js";
+import { formatReviewAck, type ReviewRequest } from "./review-request.js";
 import {
   buildContextFromThread,
   contextAuthorKey,
@@ -75,6 +75,8 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
 
   inFlightReviews.add(reviewKey);
   try {
+    await postToChannel(formatReviewAck(request, config.slack.agentLabel));
+
     if (request.target === "pr") {
       console.log(
         `[${new Date().toISOString()}] Handoff detectado: PR #${request.prNumber}, HEAD ${request.requestedHead}. Revisando...`
