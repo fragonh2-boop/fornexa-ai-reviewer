@@ -4,6 +4,12 @@ import { config } from "../config.js";
 const octokit = new Octokit({ auth: config.github.token });
 const { owner, repo } = config.github;
 
+export interface CheckState {
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+
 export interface PRContext {
   number: number;
   title: string;
@@ -11,7 +17,37 @@ export interface PRContext {
   baseSha: string;
   diffText: string;
   changedFiles: string[];
-  checks: { name: string; status: string; conclusion: string | null }[];
+  checks: CheckState[];
+}
+
+export interface RefContext {
+  ref: string;
+  headSha: string;
+  headMessage: string;
+  recentCommits: { sha: string; message: string }[];
+  checks: CheckState[];
+}
+
+async function getChecksForRef(ref: string): Promise<CheckState[]> {
+  try {
+    const checkRuns = await octokit.checks.listForRef({
+      owner,
+      repo,
+      ref,
+      per_page: 100,
+    });
+    return checkRuns.data.check_runs.map((c) => ({
+      name: c.name,
+      status: c.status,
+      conclusion: c.conclusion,
+    }));
+  } catch (err) {
+    console.warn(
+      `Aviso: no se pudieron leer los checks del ref ${ref} (posible falta de permiso "Checks" en el token). Se continúa sin ese dato.`,
+      (err as Error).message
+    );
+    return [];
+  }
 }
 
 /**
@@ -37,30 +73,6 @@ export async function getPRContext(prNumber: number): Promise<PRContext> {
     per_page: 100,
   });
 
-  // La API de Checks requiere el permiso "Checks" del token, que los tokens
-  // fine-grained de GitHub no siempre exponen como ámbito seleccionable (solo
-  // "Commit statuses"). Si el token no tiene acceso, no debe tumbar toda la
-  // revisión: simplemente se informa de que no hay checks disponibles.
-  let checks: PRContext["checks"] = [];
-  try {
-    const checkRuns = await octokit.checks.listForRef({
-      owner,
-      repo,
-      ref: pr.head.sha,
-      per_page: 100,
-    });
-    checks = checkRuns.data.check_runs.map((c) => ({
-      name: c.name,
-      status: c.status,
-      conclusion: c.conclusion,
-    }));
-  } catch (err) {
-    console.warn(
-      `Aviso: no se pudieron leer los checks del HEAD ${pr.head.sha} (posible falta de permiso "Checks" en el token). Se continúa sin ese dato.`,
-      (err as Error).message
-    );
-  }
-
   return {
     number: prNumber,
     title: pr.title,
@@ -68,14 +80,40 @@ export async function getPRContext(prNumber: number): Promise<PRContext> {
     baseSha: pr.base.sha,
     diffText,
     changedFiles: files.map((f) => f.filename),
-    checks,
+    checks: await getChecksForRef(pr.head.sha),
   };
 }
 
 /**
- * Devuelve el contenido completo de un fichero en el HEAD de la PR.
- * Herramienta de solo lectura que el modelo puede pedir cuando el diff
- * (que solo trae hunks) no le basta para razonar con seguridad.
+ * Contexto de solo lectura para una revisión de estado de una rama/ref, por
+ * ejemplo TARGET: main. Verifica el HEAD real y aporta actividad reciente;
+ * DeepSeek puede completar la investigación mediante get_full_file.
+ */
+export async function getRefContext(ref: string): Promise<RefContext> {
+  const { data: head } = await octokit.repos.getCommit({ owner, repo, ref });
+  const commits = await octokit.repos.listCommits({
+    owner,
+    repo,
+    sha: head.sha,
+    per_page: 15,
+  });
+
+  return {
+    ref,
+    headSha: head.sha,
+    headMessage: head.commit.message,
+    recentCommits: commits.data.map((commit) => ({
+      sha: commit.sha,
+      message: commit.commit.message,
+    })),
+    checks: await getChecksForRef(head.sha),
+  };
+}
+
+/**
+ * Devuelve el contenido completo de un fichero en un ref concreto.
+ * Herramienta de solo lectura que el modelo puede pedir cuando necesita
+ * verificar el estado real del repositorio y no solo un diff.
  */
 export async function getFullFileAtRef(path: string, ref: string): Promise<string> {
   const { data } = await octokit.repos.getContent({ owner, repo, path, ref });
@@ -90,9 +128,6 @@ export async function getFullFileAtRef(path: string, ref: string): Promise<strin
  *
  * IMPORTANTE — límite de seguridad real, no solo de prompt:
  * este módulo NUNCA implementa merge, push a main, ni gestión de checks/deploys.
- * El token de GitHub que usa este proceso debe tener permiso de
- * "Pull requests: Read + Write" únicamente para poder llamar a esta función
- * (comentar), y NADA de "Contents: Write" en main ni "Administration".
  */
 export async function postPRComment(prNumber: number, body: string): Promise<void> {
   await octokit.issues.createComment({
