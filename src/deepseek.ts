@@ -1,8 +1,8 @@
 import OpenAI from "openai";
 import type { ChatCompletionTool, ChatCompletionMessageParam } from "openai/resources/index.js";
 import { config } from "./config.js";
-import { getFullFileAtRef, type PRContext } from "./tools/github.js";
-import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";
+import { getFullFileAtRef, type PRContext, type RefContext } from "./tools/github.js";
+import { SYSTEM_PROMPT, buildRepositoryReviewPrompt, buildUserPrompt } from "./prompt.js";
 import { ensureContextResponseMarker } from "./context-onboarding.js";
 
 const client = new OpenAI({
@@ -30,9 +30,6 @@ Reglas obligatorias:
 La primera línea de tu respuesta debe ser exactamente:
 DEEPSEEK — FASE 0: PREGUNTAS PARA COMPLETAR CONTEXTO`;
 
-// Únicas herramientas expuestas al modelo: lectura de un fichero completo.
-// Deliberadamente NO existe ninguna tool de escritura/merge/deploy: el modelo
-// no puede invocar lo que no está definido aquí, sea cual sea el prompt.
 const tools: ChatCompletionTool[] = [
   {
     type: "function",
@@ -43,8 +40,8 @@ const tools: ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Ruta del fichero, p.ej. app/api/regulatory/route.ts" },
-          ref: { type: "string", description: "SHA o rama, normalmente el HEAD de la PR" },
+          path: { type: "string", description: "Ruta del fichero, p.ej. lib/memorandum.ts" },
+          ref: { type: "string", description: "SHA o rama exacta que se está revisando" },
         },
         required: ["path", "ref"],
       },
@@ -63,31 +60,8 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<str
   return `ERROR: herramienta desconocida "${name}"`;
 }
 
-export async function reviewPR(
-  ctx: PRContext,
-  mode: "SEGUNDA_REVISION" | "ARBITRAJE",
-  arbitrationContext?: string
-): Promise<string> {
-  const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: buildUserPrompt({
-        prNumber: ctx.number,
-        title: ctx.title,
-        headSha: ctx.headSha,
-        diffText: ctx.diffText,
-        changedFiles: ctx.changedFiles,
-        checks: ctx.checks,
-        mode,
-        arbitrationContext,
-      }),
-    },
-  ];
-
-  // Bucle de tool-calling: como máximo unas pocas idas y vueltas para pedir
-  // ficheros completos antes de que el modelo entregue el veredicto final.
-  const MAX_TOOL_ROUNDS = 6;
+async function runReview(messages: ChatCompletionMessageParam[]): Promise<string> {
+  const MAX_TOOL_ROUNDS = 8;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const completion = await client.chat.completions.create({
       model: config.deepseek.model,
@@ -116,6 +90,51 @@ export async function reviewPR(
   }
 
   return "(se alcanzó el límite de rondas de herramientas sin veredicto final; revisar manualmente)";
+}
+
+export async function reviewPR(
+  ctx: PRContext,
+  mode: "SEGUNDA_REVISION" | "ARBITRAJE",
+  arbitrationContext?: string,
+  requestInstructions?: string
+): Promise<string> {
+  return runReview([
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: buildUserPrompt({
+        prNumber: ctx.number,
+        title: ctx.title,
+        headSha: ctx.headSha,
+        diffText: ctx.diffText,
+        changedFiles: ctx.changedFiles,
+        checks: ctx.checks,
+        mode,
+        arbitrationContext,
+        requestInstructions,
+      }),
+    },
+  ]);
+}
+
+export async function reviewRepository(
+  ctx: RefContext,
+  requestInstructions: string
+): Promise<string> {
+  return runReview([
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: buildRepositoryReviewPrompt({
+        ref: ctx.ref,
+        headSha: ctx.headSha,
+        headMessage: ctx.headMessage,
+        recentCommits: ctx.recentCommits,
+        checks: ctx.checks,
+        requestInstructions,
+      }),
+    },
+  ]);
 }
 
 export async function runContextOnboarding(context: string): Promise<string> {
