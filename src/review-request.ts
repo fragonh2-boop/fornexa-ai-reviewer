@@ -30,13 +30,15 @@ export function parseReviewRequest(text: string, agentLabel: string): ReviewRequ
   if (!headMatch) return null;
 
   const requestedHead = headMatch[1].toLowerCase();
-  const targetMatch = text.match(/^\s*TARGET\s*:\s*`?([A-Za-z0-9._\/-]+)`?\s*$/im);
+  const targetMatch = text.match(/^\s*(?:TARGET|BRANCH)\s*:\s*`?([A-Za-z0-9._\/-]+)`?\s*$/im);
+  const modeMatch = text.match(/^\s*MODE\s*:\s*(MAIN|PR)\s*$/im);
+  const explicitPrMatch = text.match(/^\s*PR\s*#(\d+)\s*$/im);
 
-  // TARGET explícito gana sobre cualquier mención narrativa a una PR (p. ej.
-  // "revisión post-PR #61"). Esto permite revisiones del estado actual de main
-  // sin que una referencia histórica se interprete como el objeto a revisar.
-  if (targetMatch) {
-    const ref = targetMatch[1].toLowerCase();
+  // Las revisiones de repositorio deben ser explícitas. TARGET/BRANCH main o
+  // MODE: MAIN ganan sobre cualquier referencia narrativa a una PR histórica.
+  // Así "post-PR #61" nunca convierte una revisión global en una revisión PR.
+  if (targetMatch || modeMatch?.[1].toUpperCase() === "MAIN") {
+    const ref = (targetMatch?.[1] ?? "main").toLowerCase();
     if (ref !== "main") return null;
     return {
       target: "ref",
@@ -46,14 +48,14 @@ export function parseReviewRequest(text: string, agentLabel: string): ReviewRequ
     };
   }
 
-  // Compatibilidad con el protocolo histórico de PRs. La línea debe ser
-  // explícita y autónoma para no capturar frases como "post-PR #61".
-  const prMatch = text.match(/^\s*PR\s*#(\d+)\s*$/im);
-  if (!prMatch) return null;
+  // MODE: PR exige además una línea PR #<n>. Sin MODE se mantiene la
+  // compatibilidad histórica de PRs siempre que la línea PR sea autónoma.
+  if (modeMatch?.[1].toUpperCase() === "PR" && !explicitPrMatch) return null;
+  if (!explicitPrMatch) return null;
 
   return {
     target: "pr",
-    prNumber: Number(prMatch[1]),
+    prNumber: Number(explicitPrMatch[1]),
     requestedHead,
     instructions: text,
   };
