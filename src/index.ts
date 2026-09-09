@@ -8,8 +8,8 @@ import {
   readThread,
   type SlackMessage,
 } from "./tools/slack.js";
-import { getPRContext } from "./tools/github.js";
-import { reviewPR, runContextOnboarding } from "./deepseek.js";
+import { getPRContext, getRefContext } from "./tools/github.js";
+import { reviewPR, reviewRepository, runContextOnboarding } from "./deepseek.js";
 import {
   extractHumanMessage,
   extractReviewRequest,
@@ -66,7 +66,8 @@ function rememberEvent(eventId: string): boolean {
 }
 
 async function processReviewRequest(request: ReviewRequest): Promise<void> {
-  const reviewKey = `${request.prNumber}:${request.requestedHead}`;
+  const targetLabel = request.target === "pr" ? `pr:${request.prNumber}` : `ref:${request.ref}`;
+  const reviewKey = `${targetLabel}:${request.requestedHead}`;
   if (inFlightReviews.has(reviewKey)) {
     console.log(`[${new Date().toISOString()}] Revisión ${reviewKey} ya está en curso; se omite.`);
     return;
@@ -74,26 +75,49 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
 
   inFlightReviews.add(reviewKey);
   try {
+    if (request.target === "pr") {
+      console.log(
+        `[${new Date().toISOString()}] Handoff detectado: PR #${request.prNumber}, HEAD ${request.requestedHead}. Revisando...`
+      );
+
+      const ctx = await getPRContext(request.prNumber);
+      if (!ctx.headSha.toLowerCase().startsWith(request.requestedHead)) {
+        await postToChannel(
+          `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nPR #${ctx.number}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con el SHA actual; no se ha revisado un diff distinto del solicitado._`
+        );
+        console.log(
+          `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en PR #${request.prNumber}.`
+        );
+        return;
+      }
+
+      const verdict = await reviewPR(ctx, "SEGUNDA_REVISION", undefined, request.instructions);
+      const body = `${config.slack.agentLabel} — REVISIÓN\n\nPR #${ctx.number}: ${ctx.title}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
+
+      await postToChannel(body);
+      console.log(`[${new Date().toISOString()}] Veredicto publicado en Slack para PR #${request.prNumber}.`);
+      return;
+    }
+
     console.log(
-      `[${new Date().toISOString()}] Handoff detectado: PR #${request.prNumber}, HEAD ${request.requestedHead}. Revisando...`
+      `[${new Date().toISOString()}] Handoff detectado: TARGET ${request.ref}, HEAD ${request.requestedHead}. Revisando estado del repositorio...`
     );
 
-    const ctx = await getPRContext(request.prNumber);
+    const ctx = await getRefContext(request.ref);
     if (!ctx.headSha.toLowerCase().startsWith(request.requestedHead)) {
       await postToChannel(
-        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nPR #${ctx.number}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con el SHA actual; no se ha revisado un diff distinto del solicitado._`
+        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nTARGET ${request.ref}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`
       );
       console.log(
-        `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en PR #${request.prNumber}.`
+        `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en TARGET ${request.ref}.`
       );
       return;
     }
 
-    const verdict = await reviewPR(ctx, "SEGUNDA_REVISION");
-    const body = `${config.slack.agentLabel} — REVISIÓN\n\nPR #${ctx.number}: ${ctx.title}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
-
+    const verdict = await reviewRepository(ctx, request.instructions);
+    const body = `${config.slack.agentLabel} — REVISIÓN\n\nTARGET: ${ctx.ref}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
     await postToChannel(body);
-    console.log(`[${new Date().toISOString()}] Veredicto publicado en Slack para PR #${request.prNumber}.`);
+    console.log(`[${new Date().toISOString()}] Revisión de estado publicada para TARGET ${ctx.ref}.`);
   } finally {
     inFlightReviews.delete(reviewKey);
   }
@@ -217,8 +241,6 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
     return;
   }
 
-  // Slack necesita el 2xx antes de tres segundos. La revisión lenta continúa
-  // fuera del ciclo HTTP y Slack reintentará si el servicio gratuito estaba dormido.
   sendJson(res, 200, { ok: true });
 
   if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
@@ -287,8 +309,6 @@ async function main(): Promise<void> {
 
   startHttpServer();
 
-  // El ciclo inicial permite que un reintento de Slack despierte el Web Service
-  // aunque el primer POST quede absorbido por el arranque en frío de Render.
   tick().catch((err) => console.error("Error en el primer ciclo de sondeo:", err));
 
   const intervalMs = config.pollIntervalMinutes * 60 * 1000;
