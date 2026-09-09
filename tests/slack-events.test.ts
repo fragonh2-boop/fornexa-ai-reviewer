@@ -87,6 +87,30 @@ test("TARGET main gana sobre referencias narrativas a PRs históricas", () => {
   assert.equal(parsed.instructions, text);
 });
 
+test("MODE MAIN y BRANCH main seleccionan revisión global sin depender de PR", () => {
+  const byMode = parseReviewRequest(
+    "DEEPSEEK — ACCIÓN REQUERIDA\nMODE: MAIN\nHEAD: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce\nContexto: post-PR #61",
+    "DEEPSEEK"
+  );
+  assert.equal(byMode?.target, "ref");
+  if (!byMode || byMode.target !== "ref") throw new Error("se esperaba target main por MODE");
+  assert.equal(byMode.ref, "main");
+
+  const byBranch = parseReviewRequest(
+    "DEEPSEEK — ACCIÓN REQUERIDA\nBRANCH: main\nHEAD exacto: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce",
+    "DEEPSEEK"
+  );
+  assert.equal(byBranch?.target, "ref");
+  if (!byBranch || byBranch.target !== "ref") throw new Error("se esperaba target main por BRANCH");
+  assert.equal(byBranch.ref, "main");
+});
+
+test("MODE PR exige línea PR explícita", () => {
+  const ambiguous =
+    "DEEPSEEK — ACCIÓN REQUERIDA\nMODE: PR\nHEAD: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce\npost-PR #61";
+  assert.equal(parseReviewRequest(ambiguous, "DEEPSEEK"), null);
+});
+
 test("una mención narrativa a PR sin línea PR ni TARGET no crea un handoff ambiguo", () => {
   const text =
     "DEEPSEEK — ACCIÓN REQUERIDA\nRevisión post-PR #61\nHEAD: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce";
