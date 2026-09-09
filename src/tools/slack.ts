@@ -1,7 +1,7 @@
 import { WebClient } from "@slack/web-api";
 import { config } from "../config.js";
 import { splitSlackText } from "../context-onboarding.js";
-import { isReviewResponse, parseReviewRequest } from "../review-request.js";
+import { isReviewResponse, parseReviewRequest, type ReviewRequest } from "../review-request.js";
 
 const slack = new WebClient(config.slack.botToken);
 
@@ -72,15 +72,16 @@ export async function readThread(threadTs: string): Promise<SlackMessage[]> {
  * Busca el handoff más reciente dirigido a esta IA que todavía no tiene
  * respuesta posterior con la misma etiqueta.
  *
- * Convención (a acordar con GPT/Claude, igual que ya usan entre ellos):
- *   "DEEPSEEK — ACCIÓN REQUERIDA" ... "PR #<numero>" ... HEAD `<sha>`
+ * Protocolos admitidos:
+ *   PR:   "DEEPSEEK — ACCIÓN REQUERIDA" + línea "PR #<numero>" + HEAD
+ *   main: "DEEPSEEK — ACCIÓN REQUERIDA" + línea "TARGET: main" + HEAD
  *
  * Los mensajes de Slack llegan en orden inverso (más nuevo primero).
  */
 export function findPendingHandoff(
   messages: SlackMessage[],
   agentLabel: string
-): { prNumber: number; requestedHead: string; raw: SlackMessage } | null {
+): (ReviewRequest & { raw: SlackMessage }) | null {
   const requestMarker = `${agentLabel} — ACCIÓN REQUERIDA`;
 
   for (const msg of messages) {
