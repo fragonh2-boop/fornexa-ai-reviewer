@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import { isReviewResponse, parseReviewRequest } from "../src/review-request.js";
+import {
+  formatReviewAck,
+  isReviewResponse,
+  parseReviewRequest,
+} from "../src/review-request.js";
 import {
   extractHumanMessage,
   extractReviewRequest,
@@ -85,6 +89,30 @@ test("TARGET main gana sobre referencias narrativas a PRs históricas", () => {
   assert.equal(parsed.ref, "main");
   assert.equal(parsed.requestedHead, "d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce");
   assert.equal(parsed.instructions, text);
+});
+
+test("el ACK declara modo, objetivo y SHA sin cerrar el handoff", () => {
+  const mainRequest = parseReviewRequest(
+    "DEEPSEEK — ACCIÓN REQUERIDA\nTARGET: main\nHEAD: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce",
+    "DEEPSEEK"
+  );
+  assert.ok(mainRequest);
+  const mainAck = formatReviewAck(mainRequest, "DEEPSEEK");
+  assert.match(mainAck, /DEEPSEEK — SOLICITUD ACEPTADA/);
+  assert.match(mainAck, /Modo: MAIN/);
+  assert.match(mainAck, /Objetivo: main/);
+  assert.match(mainAck, /d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce/);
+  assert.equal(isReviewResponse({ text: mainAck, botId: "B123" }, "DEEPSEEK"), false);
+
+  const prRequest = parseReviewRequest(
+    "DEEPSEEK — ACCIÓN REQUERIDA\nPR #60\nHEAD: 463a259166ccd31cfbbc73eb6835946fd3dd683e",
+    "DEEPSEEK"
+  );
+  assert.ok(prRequest);
+  const prAck = formatReviewAck(prRequest, "DEEPSEEK");
+  assert.match(prAck, /Modo: PR/);
+  assert.match(prAck, /Objetivo: PR #60/);
+  assert.equal(isReviewResponse({ text: prAck, botId: "B123" }, "DEEPSEEK"), false);
 });
 
 test("una mención narrativa a PR sin línea PR ni TARGET no crea un handoff ambiguo", () => {
