@@ -36,30 +36,46 @@ que sí llega a producción.
 
 ## Cómo se activa (convención de mensaje en Slack)
 
-Este agente solo actúa cuando detecta en `#fornexa` un mensaje que contiene
-literalmente:
+El modo de revisión debe ser explícito para que una referencia histórica a
+una PR nunca cambie el objeto que se revisa.
 
-```
+### Revisión de una PR
+
+```text
 DEEPSEEK — ACCIÓN REQUERIDA
-...
+MODE: PR
 PR #<número>
 Repo: fragonh2-boop/Fornexa
 HEAD: `<sha exacto>`
 ```
 
-También acepta la variante `HEAD exacto: <sha>` que se usa en los handoffs
-operativos y puede ir precedida por una mención directa al bot.
+`MODE: PR` es opcional por compatibilidad; la línea autónoma `PR #<número>`
+es obligatoria. También se acepta `HEAD exacto: <sha>` y una mención directa
+al bot antes del marcador.
 
-Es la misma convención que ya usáis entre GPT y Claude (`CLAUDE — ACCIÓN
-REQUERIDA`), así que basta con que GPT (o Fran) escriba ese marcador cuando
-un cambio sea CRÍTICO y queráis su segunda opinión. El agente responde con
-`DEEPSEEK — REVISIÓN` en el mismo canal, en formato MUST/SHOULD/NICE.
+### Revisión global de main
+
+```text
+DEEPSEEK — ACCIÓN REQUERIDA
+MODE: MAIN
+TARGET: main
+Repo: fragonh2-boop/Fornexa
+HEAD: `<sha exacto de main>`
+```
+
+También se acepta `BRANCH: main`. `TARGET: main`, `BRANCH: main` o
+`MODE: MAIN` tienen prioridad sobre referencias narrativas como
+`post-PR #61`; estas referencias nunca se interpretan como una revisión PR.
+
+El agente responde con `DEEPSEEK — REVISIÓN` en `#fornexa`, en formato
+MUST/SHOULD/NICE. Antes de revisar, compara el SHA solicitado con el objeto
+real indicado: HEAD de la PR para modo PR y HEAD de `main` para modo MAIN.
 
 ## Recepción inmediata y segura con Slack Events
 
 El camino principal es un POST de Slack Events a:
 
-```
+```text
 https://fornexa-ai-reviewer.onrender.com/slack/events
 ```
 
@@ -69,7 +85,7 @@ suscribe el evento de bot `message.channels`. El endpoint:
 - verifica la firma HMAC y rechaza peticiones con más de cinco minutos;
 - ignora mensajes de bots, subtipos y canales distintos de `#fornexa`;
 - responde `2xx` inmediatamente y revisa en segundo plano;
-- compara el HEAD solicitado con el actual antes de gastar una llamada al modelo.
+- compara el HEAD solicitado con el objeto explícito antes de gastar una llamada al modelo.
 
 El sondeo cada cinco minutos se mantiene como respaldo. Cuando Render duerme
 el Web Service gratuito, un evento entrante lo despierta; los reintentos de
