@@ -52,24 +52,45 @@ test("verifica una firma vigente y rechaza manipulación o replay", () => {
   );
 });
 
-test("extrae una solicitud solo cuando incluye PR y HEAD", () => {
+test("extrae una solicitud PR solo con línea PR explícita y HEAD", () => {
   const text =
     "DEEPSEEK — ACCIÓN REQUERIDA\n\nPR #54\nRepo: fragonh2-boop/Fornexa\nHEAD: `ab87ab8a6807386069ee2324988d40f58e0861c7`";
-  assert.deepEqual(parseReviewRequest(text, "DEEPSEEK"), {
-    prNumber: 54,
-    requestedHead: "ab87ab8a6807386069ee2324988d40f58e0861c7",
-  });
+  const parsed = parseReviewRequest(text, "DEEPSEEK");
+  assert.equal(parsed?.target, "pr");
+  if (!parsed || parsed.target !== "pr") throw new Error("se esperaba target PR");
+  assert.equal(parsed.prNumber, 54);
+  assert.equal(parsed.requestedHead, "ab87ab8a6807386069ee2324988d40f58e0861c7");
+  assert.equal(parsed.instructions, text);
   assert.equal(parseReviewRequest("DEEPSEEK — ACCIÓN REQUERIDA\nPR #54", "DEEPSEEK"), null);
 });
 
 test("acepta una mención con HEAD exacto como los triggers de Slack", () => {
   const text =
     "<@U0BV95NCT89|Fornexa DeepSeek Reviewer> DEEPSEEK — ACCIÓN REQUERIDA — RETRY\n\nPR #60\nHEAD exacto: 463a259166ccd31cfbbc73eb6835946fd3dd683e";
+  const parsed = parseReviewRequest(text, "DEEPSEEK");
 
-  assert.deepEqual(parseReviewRequest(text, "DEEPSEEK"), {
-    prNumber: 60,
-    requestedHead: "463a259166ccd31cfbbc73eb6835946fd3dd683e",
-  });
+  assert.equal(parsed?.target, "pr");
+  if (!parsed || parsed.target !== "pr") throw new Error("se esperaba target PR");
+  assert.equal(parsed.prNumber, 60);
+  assert.equal(parsed.requestedHead, "463a259166ccd31cfbbc73eb6835946fd3dd683e");
+});
+
+test("TARGET main gana sobre referencias narrativas a PRs históricas", () => {
+  const text =
+    "<@U0BV95NCT89|Fornexa DeepSeek Reviewer> DEEPSEEK — ACCIÓN REQUERIDA\n\nRepo: fragonh2-boop/Fornexa\nTARGET: main\nHEAD: `d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce`\n\nRevisión de conjunto post-PR #61. No revises PR #60 de nuevo.";
+  const parsed = parseReviewRequest(text, "DEEPSEEK");
+
+  assert.equal(parsed?.target, "ref");
+  if (!parsed || parsed.target !== "ref") throw new Error("se esperaba target ref");
+  assert.equal(parsed.ref, "main");
+  assert.equal(parsed.requestedHead, "d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce");
+  assert.equal(parsed.instructions, text);
+});
+
+test("una mención narrativa a PR sin línea PR ni TARGET no crea un handoff ambiguo", () => {
+  const text =
+    "DEEPSEEK — ACCIÓN REQUERIDA\nRevisión post-PR #61\nHEAD: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce";
+  assert.equal(parseReviewRequest(text, "DEEPSEEK"), null);
 });
 
 test("solo una revisión publicada por el bot cuenta como respuesta", () => {
@@ -106,10 +127,11 @@ test("solo acepta mensajes humanos del canal configurado", () => {
     },
   };
 
-  assert.deepEqual(extractReviewRequest(base, "C0BT661FYLW", "DEEPSEEK"), {
-    prNumber: 54,
-    requestedHead: "ab87ab8",
-  });
+  const request = extractReviewRequest(base, "C0BT661FYLW", "DEEPSEEK");
+  assert.equal(request?.target, "pr");
+  if (!request || request.target !== "pr") throw new Error("se esperaba target PR");
+  assert.equal(request.prNumber, 54);
+  assert.equal(request.requestedHead, "ab87ab8");
   assert.equal(
     extractReviewRequest(
       { ...base, event: { ...base.event, bot_id: "B123" } },
