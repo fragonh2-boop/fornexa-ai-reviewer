@@ -22,6 +22,14 @@ export function isReviewResponse(
   return Boolean(message.botId) && message.text.startsWith(`${agentLabel} — REVISIÓN`);
 }
 
+export function formatReviewAck(request: ReviewRequest, agentLabel: string): string {
+  if (request.target === "pr") {
+    return `${agentLabel} — SOLICITUD ACEPTADA\n\nModo: PR\nObjetivo: PR #${request.prNumber}\nSHA solicitado: \`${request.requestedHead}\`\n\n_Validando HEAD antes de iniciar la revisión._`;
+  }
+
+  return `${agentLabel} — SOLICITUD ACEPTADA\n\nModo: MAIN\nObjetivo: ${request.ref}\nSHA solicitado: \`${request.requestedHead}\`\n\n_Validando HEAD de ${request.ref} antes de iniciar la revisión de repositorio._`;
+}
+
 export function parseReviewRequest(text: string, agentLabel: string): ReviewRequest | null {
   const requestMarker = `${agentLabel} — ACCIÓN REQUERIDA`;
   if (!text.includes(requestMarker)) return null;
