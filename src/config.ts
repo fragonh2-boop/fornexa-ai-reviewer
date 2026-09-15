@@ -10,11 +10,23 @@ function required(name: string): string {
   return value;
 }
 
+function positiveNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw || raw.trim() === "") return fallback;
+
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} debe ser un número positivo.`);
+  }
+  return value;
+}
+
 export const config = {
   deepseek: {
     apiKey: required("DEEPSEEK_API_KEY"),
     model: process.env.DEEPSEEK_MODEL ?? "deepseek-v4-pro",
     baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
+    requestTimeoutMs: positiveNumber("DEEPSEEK_REQUEST_TIMEOUT_MS", 180_000),
   },
   slack: {
     botToken: required("SLACK_BOT_TOKEN"),
@@ -27,5 +39,6 @@ export const config = {
     owner: process.env.GITHUB_OWNER ?? "fragonh2-boop",
     repo: process.env.GITHUB_REPO ?? "Fornexa",
   },
-  pollIntervalMinutes: Number(process.env.POLL_INTERVAL_MINUTES ?? "5"),
+  pollIntervalMinutes: positiveNumber("POLL_INTERVAL_MINUTES", 5),
+  staleLockMinutes: positiveNumber("STALE_LOCK_MINUTES", 15),
 };

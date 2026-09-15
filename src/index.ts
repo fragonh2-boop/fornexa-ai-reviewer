@@ -25,12 +25,14 @@ import {
   isContextReadyMessage,
   isContextThreadRoot,
 } from "./context-onboarding.js";
+import { acquireLock, ownsLock, releaseLock } from "./reliability.js";
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const MAX_REMEMBERED_EVENT_IDS = 1000;
-const inFlightReviews = new Set<string>();
-const inFlightContextThreads = new Set<string>();
+const inFlightReviews = new Map<string, number>();
+const inFlightContextThreads = new Map<string, number>();
 const processedEventIds = new Set<string>();
+const staleLockMs = config.staleLockMinutes * 60 * 1000;
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -68,12 +70,17 @@ function rememberEvent(eventId: string): boolean {
 async function processReviewRequest(request: ReviewRequest): Promise<void> {
   const targetLabel = request.target === "pr" ? `pr:${request.prNumber}` : `ref:${request.ref}`;
   const reviewKey = `${targetLabel}:${request.requestedHead}`;
-  if (inFlightReviews.has(reviewKey)) {
+  const lock = acquireLock(inFlightReviews, reviewKey, staleLockMs);
+  if (!lock.acquired) {
     console.log(`[${new Date().toISOString()}] Revisión ${reviewKey} ya está en curso; se omite.`);
     return;
   }
+  if (lock.recoveredStaleLock) {
+    console.warn(
+      `[${new Date().toISOString()}] Revisión ${reviewKey} atascada durante más de ${config.staleLockMinutes} minuto(s); se reintenta.`
+    );
+  }
 
-  inFlightReviews.add(reviewKey);
   try {
     if (request.target === "pr") {
       console.log(
@@ -82,6 +89,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
 
       const ctx = await getPRContext(request.prNumber);
       if (!ctx.headSha.toLowerCase().startsWith(request.requestedHead)) {
+        if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
         await postToChannel(
           `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nPR #${ctx.number}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con el SHA actual; no se ha revisado un diff distinto del solicitado._`
         );
@@ -94,6 +102,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
       const verdict = await reviewPR(ctx, "SEGUNDA_REVISION", undefined, request.instructions);
       const body = `${config.slack.agentLabel} — REVISIÓN\n\nPR #${ctx.number}: ${ctx.title}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
 
+      if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
       await postToChannel(body);
       console.log(`[${new Date().toISOString()}] Veredicto publicado en Slack para PR #${request.prNumber}.`);
       return;
@@ -105,6 +114,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
 
     const ctx = await getRefContext(request.ref);
     if (!ctx.headSha.toLowerCase().startsWith(request.requestedHead)) {
+      if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
       await postToChannel(
         `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nTARGET ${request.ref}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`
       );
@@ -116,25 +126,37 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
 
     const verdict = await reviewRepository(ctx, request.instructions);
     const body = `${config.slack.agentLabel} — REVISIÓN\n\nTARGET: ${ctx.ref}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
+    if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
     await postToChannel(body);
     console.log(`[${new Date().toISOString()}] Revisión de estado publicada para TARGET ${ctx.ref}.`);
+  } catch (err) {
+    if (ownsLock(inFlightReviews, reviewKey, lock.startedAt)) {
+      await notifyFailure(`La revisión ${reviewKey} falló antes de completarse.`);
+    }
+    throw err;
   } finally {
-    inFlightReviews.delete(reviewKey);
+    releaseLock(inFlightReviews, reviewKey, lock.startedAt);
   }
 }
 
 async function processContextThread(threadTs: string): Promise<void> {
-  if (inFlightContextThreads.has(threadTs)) {
+  const lock = acquireLock(inFlightContextThreads, threadTs, staleLockMs);
+  if (!lock.acquired) {
     console.log(`[${new Date().toISOString()}] Contexto ${threadTs} ya está en curso; se omite.`);
     return;
   }
+  if (lock.recoveredStaleLock) {
+    console.warn(
+      `[${new Date().toISOString()}] Contexto ${threadTs} atascado durante más de ${config.staleLockMinutes} minuto(s); se reintenta.`
+    );
+  }
 
-  inFlightContextThreads.add(threadTs);
   try {
     const messages = await readThread(threadTs);
     const root = messages.find((message) => message.ts === threadTs);
     const authorKey = root ? contextAuthorKey(root) : null;
     if (!authorKey) {
+      if (!ownsLock(inFlightContextThreads, threadTs, lock.startedAt)) return;
       await postToThread(
         `${config.slack.agentLabel} — CONTEXTO NO PROCESADO\n\nNo se ha podido verificar el autor de Slack del mensaje raíz.`,
         threadTs
@@ -148,6 +170,7 @@ async function processContextThread(threadTs: string): Promise<void> {
 
     const built = buildContextFromThread(messages, authorKey);
     if (!built.ok) {
+      if (!ownsLock(inFlightContextThreads, threadTs, lock.startedAt)) return;
       await postToThread(
         `${config.slack.agentLabel} — CONTEXTO NO PROCESADO\n\n${built.error}`,
         threadTs
@@ -160,10 +183,26 @@ async function processContextThread(threadTs: string): Promise<void> {
       `[${new Date().toISOString()}] Procesando ${built.packageCount} paquetes de contexto del hilo ${threadTs}.`
     );
     const response = await runContextOnboarding(built.context);
+    if (!ownsLock(inFlightContextThreads, threadTs, lock.startedAt)) return;
     await postToThread(response, threadTs);
     console.log(`[${new Date().toISOString()}] Preguntas de contexto publicadas en ${threadTs}.`);
+  } catch (err) {
+    if (ownsLock(inFlightContextThreads, threadTs, lock.startedAt)) {
+      await notifyFailure(`El procesamiento del contexto ${threadTs} falló antes de completarse.`);
+    }
+    throw err;
   } finally {
-    inFlightContextThreads.delete(threadTs);
+    releaseLock(inFlightContextThreads, threadTs, lock.startedAt);
+  }
+}
+
+async function notifyFailure(scope: string): Promise<void> {
+  try {
+    await postToChannel(
+      `${config.slack.agentLabel} — REVISIÓN FALLIDA\n\n${scope}\n\n_El detalle técnico se conserva en el log del servicio. El candado se liberará para permitir un reintento seguro._`
+    );
+  } catch (notificationError) {
+    console.error("No se pudo publicar el aviso de fallo en Slack:", notificationError);
   }
 }
 

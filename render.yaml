@@ -11,6 +11,8 @@ services:
         sync: false
       - key: DEEPSEEK_MODEL
         value: deepseek-v4-pro
+      - key: DEEPSEEK_REQUEST_TIMEOUT_MS
+        value: "180000"
       - key: SLACK_BOT_TOKEN
         sync: false
       - key: SLACK_SIGNING_SECRET
@@ -27,3 +29,5 @@ services:
         value: Fornexa
       - key: POLL_INTERVAL_MINUTES
         value: "5"
+      - key: STALE_LOCK_MINUTES
+        value: "15"

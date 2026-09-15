@@ -4,10 +4,14 @@ import { config } from "./config.js";
 import { getFullFileAtRef, type PRContext, type RefContext } from "./tools/github.js";
 import { SYSTEM_PROMPT, buildRepositoryReviewPrompt, buildUserPrompt } from "./prompt.js";
 import { ensureContextResponseMarker } from "./context-onboarding.js";
+import { extractFirstChoice, withTimeout } from "./reliability.js";
+
+export { extractFirstChoice, withTimeout } from "./reliability.js";
 
 const client = new OpenAI({
   apiKey: config.deepseek.apiKey,
   baseURL: config.deepseek.baseURL,
+  timeout: config.deepseek.requestTimeoutMs,
 });
 
 const CONTEXT_ONBOARDING_SYSTEM_PROMPT = `Eres DeepSeek, tercera IA técnica del proyecto FORNEXA.
@@ -63,14 +67,18 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<str
 async function runReview(messages: ChatCompletionMessageParam[]): Promise<string> {
   const MAX_TOOL_ROUNDS = 8;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const completion = await client.chat.completions.create({
-      model: config.deepseek.model,
-      messages,
-      tools,
-      temperature: 0.2,
-    });
+    const completion = await withTimeout(
+      client.chat.completions.create({
+        model: config.deepseek.model,
+        messages,
+        tools,
+        temperature: 0.2,
+      }),
+      config.deepseek.requestTimeoutMs,
+      `La solicitud de revisión a DeepSeek (ronda ${round + 1})`
+    );
 
-    const choice = completion.choices[0];
+    const choice = extractFirstChoice(completion);
     const message = choice.message;
 
     if (!message.tool_calls || message.tool_calls.length === 0) {
@@ -138,20 +146,24 @@ export async function reviewRepository(
 }
 
 export async function runContextOnboarding(context: string): Promise<string> {
-  const completion = await client.chat.completions.create({
-    model: config.deepseek.model,
-    messages: [
-      { role: "system", content: CONTEXT_ONBOARDING_SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: `Documento de incorporación de FORNEXA:\n\n${context}`,
-      },
-    ],
-    temperature: 0.15,
-    max_tokens: 8000,
-  });
+  const completion = await withTimeout(
+    client.chat.completions.create({
+      model: config.deepseek.model,
+      messages: [
+        { role: "system", content: CONTEXT_ONBOARDING_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `Documento de incorporación de FORNEXA:\n\n${context}`,
+        },
+      ],
+      temperature: 0.15,
+      max_tokens: 8000,
+    }),
+    config.deepseek.requestTimeoutMs,
+    "La solicitud de incorporación contextual a DeepSeek"
+  );
 
   return ensureContextResponseMarker(
-    completion.choices[0]?.message.content ?? "(el modelo no devolvió contenido)"
+    extractFirstChoice(completion).message.content ?? "(el modelo no devolvió contenido)"
   );
 }
