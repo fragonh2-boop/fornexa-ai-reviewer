@@ -133,6 +133,20 @@ test("solo una revisión publicada por el bot cuenta como respuesta", () => {
     false
   );
   assert.equal(
+    isReviewResponse(
+      { text: "DEEPSEEK — REVISIÓN NO INICIADA\n\nHEAD desactualizado", botId: "B123" },
+      "DEEPSEEK"
+    ),
+    true
+  );
+  assert.equal(
+    isReviewResponse(
+      { text: "DEEPSEEK — REVISIÓN FALLIDA\n\nTimeout", botId: "B123" },
+      "DEEPSEEK"
+    ),
+    false
+  );
+  assert.equal(
     isReviewResponse({ text: "DEEPSEEK — REVISIÓN\n\ntexto humano" }, "DEEPSEEK"),
     false
   );

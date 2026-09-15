@@ -91,6 +91,13 @@ El sondeo cada cinco minutos se mantiene como respaldo. Cuando Render duerme
 el Web Service gratuito, un evento entrante lo despierta; los reintentos de
 Slack y el sondeo inicial permiten recuperar el handoff durante ese arranque.
 
+Cada llamada a DeepSeek tiene un timeout configurable mediante
+`DEEPSEEK_REQUEST_TIMEOUT_MS` (tres minutos por defecto). Los trabajos en curso
+guardan su hora de inicio; si superan `STALE_LOCK_MINUTES` (quince minutos por
+defecto), una nueva entrega puede recuperar el candado. Los fallos reales se
+anuncian en Slack como `DEEPSEEK — REVISIÓN FALLIDA`, mientras el detalle
+técnico permanece en el log del servicio.
+
 ## Incorporación de contexto de FORNEXA
 
 Además de las revisiones, el bot puede ingerir un documento de incorporación

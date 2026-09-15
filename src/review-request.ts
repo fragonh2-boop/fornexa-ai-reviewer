@@ -19,7 +19,13 @@ export function isReviewResponse(
   message: { text: string; botId?: string },
   agentLabel: string
 ): boolean {
-  return Boolean(message.botId) && message.text.startsWith(`${agentLabel} — REVISIÓN`);
+  if (!message.botId) return false;
+
+  const firstLine = message.text.split("\n", 1)[0].trim();
+  return (
+    firstLine === `${agentLabel} — REVISIÓN` ||
+    firstLine === `${agentLabel} — REVISIÓN NO INICIADA`
+  );
 }
 
 export function parseReviewRequest(text: string, agentLabel: string): ReviewRequest | null {
