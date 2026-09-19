@@ -6,7 +6,15 @@ export interface ImplementationRequest { head: string; task: string; paths: stri
 export interface FileChange { path: string; content: string }
 export function safePath(path: string): boolean {
   return /^[A-Za-z0-9_./-]+$/.test(path) && !path.split('/').some(p => !p || p === '.' || p === '..')
-    && !/(^|\/)(\.git|\.github|\.env[^/]*|node_modules)(\/|$)/.test(path);
+    && !/(^|\/)(\.git|\.env[^/]*|node_modules)(\/|$)/.test(path);
+}
+/** Write restrictions are separate from reads: reviewers must inspect CI/config. */
+export function safeWritePath(path: string): boolean {
+  if (!safePath(path)) return false;
+  const name = path.split('/').at(-1)!.toLowerCase();
+  if (/^(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|deno\.(jsonc?|lock)|vercel\.json|render\.ya?ml|dockerfile(?:\..*)?|compose\.ya?ml|makefile|procfile|\.npmrc|\.yarnrc(?:\.yml)?|\.pnpmfile\.cjs|\.gitmodules|\.gitattributes|\.gitignore)$/.test(name)) return false;
+  if (/^(?:.*\.config(?:\..*)?|tsconfig(?:\..*)?\.json)$/.test(name)) return false;
+  return !path.split('/').some(part => ['.github', '.husky', '.circleci', '.buildkite', '.vercel'].includes(part));
 }
 export function parseImplementation(text: string, label: string): ImplementationRequest | null {
   if (text.length > 20_000) return null;
@@ -15,7 +23,7 @@ export function parseImplementation(text: string, label: string): Implementation
   if (field('MODE') !== 'IMPLEMENT') return null;
   const head = field('HEAD'); const task = field('TASK'); const acceptance = field('ACCEPTANCE');
   const paths = field('PATHS').split(',').map(p => p.trim());
-  if (!/^[a-f0-9]{40}$/.test(head) || !task || !acceptance || !paths.length || paths.length > 20 || !paths.every(safePath) || new Set(paths).size !== paths.length) return null;
+  if (!/^[a-f0-9]{40}$/.test(head) || !task || !acceptance || !paths.length || paths.length > 20 || !paths.every(safeWritePath) || new Set(paths).size !== paths.length) return null;
   return { head, task, acceptance, paths, id: createHash('sha256').update(text).digest('hex').slice(0, 24) };
 }
 export function validateChanges(value: unknown, request: ImplementationRequest): FileChange[] {
@@ -23,7 +31,7 @@ export function validateChanges(value: unknown, request: ImplementationRequest):
   let bytes = 0;
   const seen = new Set<string>();
   for (const file of value) {
-    if (!file || typeof file.path !== 'string' || !request.paths.includes(file.path) || !safePath(file.path) || seen.has(file.path) || typeof file.content !== 'string' || file.content.includes('\0')) throw new Error('Out of scope or invalid file');
+    if (!file || typeof file.path !== 'string' || !request.paths.includes(file.path) || !safeWritePath(file.path) || seen.has(file.path) || typeof file.content !== 'string' || file.content.includes('\0')) throw new Error('Out of scope or invalid file');
     seen.add(file.path); bytes += Buffer.byteLength(file.content);
   }
   if (bytes > 200_000) throw new Error('Change budget exceeded');

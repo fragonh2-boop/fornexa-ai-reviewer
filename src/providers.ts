@@ -27,3 +27,5 @@ export function createAdapter(provider: ProviderName, apiKey: string, model: str
     },
   };
 }
+
+export function supportsLegacyOnboarding(provider: ProviderName): boolean { return provider === "deepseek"; }

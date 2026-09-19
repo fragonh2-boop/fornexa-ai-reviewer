@@ -1,6 +1,6 @@
 import { runCapabilities } from "./capabilities.js";
 import { safePath } from "./implementation.js";
-import { createAdapter } from "./providers.js";
+import { createAdapter, supportsLegacyOnboarding } from "./providers.js";
 import type { ChatCompletionTool, ChatCompletionMessageParam } from "openai/resources/index.js";
 import { config } from "./config.js";
 import { getFullFileAtRef, type PRContext, type RefContext } from "./tools/github.js";
@@ -103,6 +103,7 @@ export async function reviewRepository(
 }
 
 export async function runContextOnboarding(context: string): Promise<string> {
+  if (!supportsLegacyOnboarding(config.model.provider)) throw new Error("Legacy onboarding belongs to DeepSeek");
   const message = await adapter.complete([
     { role: "system", content: CONTEXT_ONBOARDING_SYSTEM_PROMPT },
     { role: "user", content: context },

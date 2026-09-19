@@ -13,7 +13,7 @@ test('implementation protocol rejects missing acceptance, short SHA, duplicate f
   assert.equal(parseReviewRequest(`GEMINI — ACCIÓN REQUERIDA\nMODE: PR\nPR #2\nHEAD: abcdefa`, 'GEMINI'), null);
 });
 test('host rejects write scope expansion, duplicate paths and payload budgets', () => {
-  for (const path of ['.github/workflows/a.yml', '.env', '../a', 'a//b', '/etc/a']) assert.equal(safePath(path), false);
+  for (const path of ['.env', '../a', 'a//b', '/etc/a']) assert.equal(safePath(path), false);
   for (const files of [[{path:'other',content:'x'}], [{path:'docs/a.md',content:'x'.repeat(200001)}], [{path:'docs/a.md',content:'a'}, {path:'docs/a.md',content:'b'}]]) assert.throws(() => validateChanges(files, request));
 });
 for (const provider of Object.keys(endpoints) as ProviderName[]) {

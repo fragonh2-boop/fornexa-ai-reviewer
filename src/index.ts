@@ -1,3 +1,5 @@
+import { supportsLegacyOnboarding } from "./providers.js";
+import { createDiagnosticReporter } from "./request-diagnostics.js";
 import { processImplementation } from "./implementation-runner.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
@@ -33,6 +35,7 @@ const MAX_REMEMBERED_EVENT_IDS = 1000;
 const inFlightReviews = new Map<string, number>();
 const inFlightContextThreads = new Map<string, number>();
 const processedEventIds = new Set<string>();
+const reportMalformed = createDiagnosticReporter(config.slack.agentLabel, postToThread);
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -142,6 +145,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
 }
 
 async function processContextThread(threadTs: string): Promise<void> {
+  if (!supportsLegacyOnboarding(config.model.provider)) return;
   const lock = acquireLock(inFlightContextThreads, threadTs, staleLockMs);
   if (!lock.acquired) {
     console.log(`[${new Date().toISOString()}] Contexto ${threadTs} ya está en curso; se omite.`);
@@ -211,6 +215,7 @@ async function notifyFailure(scope: string): Promise<void> {
 async function findPendingContextThread(messages: SlackMessage[]): Promise<{
   threadTs: string;
 } | null> {
+  if (!supportsLegacyOnboarding(config.model.provider)) return null;
   const roots = messages.filter(
     (message) =>
       message.text.startsWith(CONTEXT_MARKER) &&
@@ -231,6 +236,7 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
 async function tick(): Promise<void> {
   const messages = await readRecentHistory();
   for (const message of messages) {
+    if (await reportMalformed(message)) continue;
     if (await processImplementation(message)) break;
   }
   const pending = findPendingHandoff(messages, config.slack.agentLabel);
@@ -289,11 +295,12 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
 
   if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
   const humanMessage = extractHumanMessage(envelope, config.slack.channelId);
+  if (humanMessage && await reportMalformed(humanMessage)) return;
   if (humanMessage && /^MODE:\s*IMPLEMENT\s*$/m.test(humanMessage.text)) {
     setImmediate(() => { processImplementation(humanMessage).catch(() => console.error('Implementation failed; checkpoint retained')); });
     return;
   }
-  if (humanMessage && isContextReadyMessage(humanMessage.text)) {
+  if (supportsLegacyOnboarding(config.model.provider) && humanMessage && isContextReadyMessage(humanMessage.text)) {
     const threadTs = humanMessage.threadTs ?? humanMessage.ts;
     setImmediate(() => {
       processContextThread(threadTs).catch((err) =>

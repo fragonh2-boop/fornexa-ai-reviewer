@@ -85,6 +85,7 @@ export function findPendingHandoff(
   const requestMarker = `${agentLabel} — ACCIÓN REQUERIDA`;
 
   for (const msg of messages) {
+    if (msg.botId || !msg.user || (msg.threadTs && msg.threadTs !== msg.ts)) continue;
     if (msg.text.includes(requestMarker)) {
       const parsed = parseReviewRequest(msg.text, agentLabel);
       if (!parsed) continue;
