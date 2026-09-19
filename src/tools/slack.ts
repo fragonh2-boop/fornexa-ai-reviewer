@@ -86,9 +86,11 @@ export function findPendingHandoff(
 
   for (const msg of messages) {
     if (msg.text.includes(requestMarker)) {
+      const parsed = parseReviewRequest(msg.text, agentLabel);
+      if (!parsed) continue;
       // ¿Hay ya una respuesta de esta IA con timestamp posterior?
       const alreadyAnswered = messages.some(
-        (other) => other.ts > msg.ts && isReviewResponse(other, agentLabel)
+        (other) => other.ts > msg.ts && isReviewResponse(other, agentLabel) && other.text.includes(parsed.requestedHead) && (parsed.target === "pr" ? other.text.includes(`PR #${parsed.prNumber}:`) : other.text.includes(`TARGET: ${parsed.ref}`))
       );
       if (alreadyAnswered) continue;
 

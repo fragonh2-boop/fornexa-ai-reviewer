@@ -1,3 +1,4 @@
+import { processImplementation } from "./implementation-runner.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
 import {
@@ -9,7 +10,7 @@ import {
   type SlackMessage,
 } from "./tools/slack.js";
 import { getPRContext, getRefContext } from "./tools/github.js";
-import { reviewPR, reviewRepository, runContextOnboarding } from "./deepseek.js";
+import { reviewPR, reviewRepository, runContextOnboarding } from "./agent.js";
 import {
   extractHumanMessage,
   extractReviewRequest,
@@ -88,7 +89,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
       );
 
       const ctx = await getPRContext(request.prNumber);
-      if (!ctx.headSha.toLowerCase().startsWith(request.requestedHead)) {
+      if (ctx.headSha.toLowerCase() !== request.requestedHead) {
         if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
         await postToChannel(
           `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nPR #${ctx.number}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con el SHA actual; no se ha revisado un diff distinto del solicitado._`
@@ -100,6 +101,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
       }
 
       const verdict = await reviewPR(ctx, "SEGUNDA_REVISION", undefined, request.instructions);
+      if ((await getPRContext(request.prNumber)).headSha !== ctx.headSha) throw new Error('HEAD changed during review');
       const body = `${config.slack.agentLabel} — REVISIÓN\n\nPR #${ctx.number}: ${ctx.title}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
 
       if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
@@ -113,7 +115,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
     );
 
     const ctx = await getRefContext(request.ref);
-    if (!ctx.headSha.toLowerCase().startsWith(request.requestedHead)) {
+    if (ctx.headSha.toLowerCase() !== request.requestedHead) {
       if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
       await postToChannel(
         `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nTARGET ${request.ref}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`
@@ -228,6 +230,9 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
 
 async function tick(): Promise<void> {
   const messages = await readRecentHistory();
+  for (const message of messages) {
+    if (await processImplementation(message)) break;
+  }
   const pending = findPendingHandoff(messages, config.slack.agentLabel);
 
   if (pending) {
@@ -284,6 +289,10 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
 
   if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
   const humanMessage = extractHumanMessage(envelope, config.slack.channelId);
+  if (humanMessage && /^MODE:\s*IMPLEMENT\s*$/m.test(humanMessage.text)) {
+    setImmediate(() => { processImplementation(humanMessage).catch(() => console.error('Implementation failed; checkpoint retained')); });
+    return;
+  }
   if (humanMessage && isContextReadyMessage(humanMessage.text)) {
     const threadTs = humanMessage.threadTs ?? humanMessage.ts;
     setImmediate(() => {

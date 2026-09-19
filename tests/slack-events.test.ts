@@ -153,7 +153,7 @@ test("solo una revisión publicada por el bot cuenta como respuesta", () => {
 });
 
 test("solo acepta mensajes humanos del canal configurado", () => {
-  const text = "DEEPSEEK — ACCIÓN REQUERIDA\nPR #54\nHEAD: `ab87ab8`";
+  const text = "DEEPSEEK — ACCIÓN REQUERIDA\nPR #54\nHEAD: `ab87ab8a6807386069ee2324988d40f58e0861c7`";
   const base = {
     type: "event_callback",
     event: {
@@ -169,7 +169,7 @@ test("solo acepta mensajes humanos del canal configurado", () => {
   assert.equal(request?.target, "pr");
   if (!request || request.target !== "pr") throw new Error("se esperaba target PR");
   assert.equal(request.prNumber, 54);
-  assert.equal(request.requestedHead, "ab87ab8");
+  assert.equal(request.requestedHead, "ab87ab8a6807386069ee2324988d40f58e0861c7");
   assert.equal(
     extractReviewRequest(
       { ...base, event: { ...base.event, bot_id: "B123" } },
