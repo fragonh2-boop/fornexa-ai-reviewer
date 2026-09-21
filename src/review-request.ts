@@ -24,7 +24,8 @@ export function isReviewResponse(
   const firstLine = message.text.split("\n", 1)[0].trim();
   return (
     firstLine === `${agentLabel} — REVISIÓN` ||
-    firstLine === `${agentLabel} — REVISIÓN NO INICIADA`
+    firstLine === `${agentLabel} — REVISIÓN NO INICIADA` ||
+    firstLine === `${agentLabel} — REVISIÓN FALLIDA`
   );
 }
 
