@@ -7,7 +7,7 @@ export interface ModelAdapter {
 export const endpoints: Record<ProviderName, string> = {
   gpt: 'https://api.openai.com/v1',
   claude: 'https://api.anthropic.com/v1',
-  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai',
   deepseek: 'https://api.deepseek.com',
 };
 /** Shared function-calling transport; no repository permissions live in adapters. */
