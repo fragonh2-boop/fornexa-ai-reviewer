@@ -73,6 +73,8 @@ export async function getPRContext(prNumber: number): Promise<PRContext> {
     per_page: 100,
   });
 
+  const current = await octokit.pulls.get({ owner, repo, pull_number: prNumber });
+  if (current.data.head.sha !== pr.head.sha || current.data.base.sha !== pr.base.sha) throw new Error('PR changed during context capture');
   return {
     number: prNumber,
     title: pr.title,

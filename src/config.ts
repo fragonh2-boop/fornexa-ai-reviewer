@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { endpoints, type ProviderName } from "./providers.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -21,17 +22,17 @@ function positiveNumber(name: string, fallback: number): number {
   return value;
 }
 
+const provider = (process.env.AI_PROVIDER ?? 'deepseek') as ProviderName;
+if (!Object.hasOwn(endpoints, provider)) throw new Error('Unsupported AI_PROVIDER');
+const prefix = { gpt: 'OPENAI', claude: 'ANTHROPIC', gemini: 'GEMINI', deepseek: 'DEEPSEEK' }[provider];
 export const config = {
-  deepseek: {
-    apiKey: required("DEEPSEEK_API_KEY"),
-    model: process.env.DEEPSEEK_MODEL ?? "deepseek-v4-pro",
-    baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
-    requestTimeoutMs: positiveNumber("DEEPSEEK_REQUEST_TIMEOUT_MS", 180_000),
-  },
+  model: { provider, apiKey: required(`${prefix}_API_KEY`),
+    name: process.env[`${prefix}_MODEL`] ?? (provider === 'deepseek' ? 'deepseek-v4-pro' : required(`${prefix}_MODEL`)),
+    timeout: positiveNumber('AI_REQUEST_TIMEOUT_MS', positiveNumber('DEEPSEEK_REQUEST_TIMEOUT_MS', 180_000)) },
   slack: {
     botToken: required("SLACK_BOT_TOKEN"),
     channelId: process.env.SLACK_CHANNEL_ID ?? "C0BT661FYLW",
-    agentLabel: process.env.SLACK_AGENT_LABEL ?? "DEEPSEEK",
+    agentLabel: process.env.SLACK_AGENT_LABEL ?? provider.toUpperCase(),
     signingSecret: process.env.SLACK_SIGNING_SECRET?.trim() || null,
   },
   github: {

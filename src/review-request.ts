@@ -30,9 +30,10 @@ export function isReviewResponse(
 
 export function parseReviewRequest(text: string, agentLabel: string): ReviewRequest | null {
   const requestMarker = `${agentLabel} — ACCIÓN REQUERIDA`;
-  if (!text.includes(requestMarker)) return null;
+  if (!text.split("\n")[0].includes(requestMarker)) return null;
 
-  const headMatch = text.match(/HEAD(?:\s+exacto)?\s*:\s*`?([0-9a-f]{7,40})`?/i);
+  if (/^\s*MODE\s*:\s*IMPLEMENT\s*$/im.test(text)) return null;
+  const headMatch = text.match(/HEAD(?:\s+exacto)?\s*:\s*`?([0-9a-f]{40})`?\s*$/im);
   if (!headMatch) return null;
 
   const requestedHead = headMatch[1].toLowerCase();

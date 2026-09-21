@@ -153,3 +153,8 @@ con los valores por defecto de Fornexa.
   (hoy el agente solo mira GitHub).
 - Convención de mensaje específica para el modo ÁRBITRO (que GPT incluya el
   resumen del desacuerdo con Claude en el propio handoff).
+
+## Proposed GPT / Claude / Gemini parity
+
+See [architecture, least privilege, protocol and recovery](docs/provider-parity.md).
+The implementation lane is disabled by default. DeepSeek remains read-only.
