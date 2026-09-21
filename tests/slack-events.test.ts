@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import { isReviewResponse, parseReviewRequest } from "../src/review-request.js";
+import {
+  isReviewResponse,
+  isReviewResponseForRequest,
+  parseReviewRequest,
+} from "../src/review-request.js";
 import {
   extractHumanMessage,
   extractReviewRequest,
@@ -144,12 +148,46 @@ test("solo una revisión publicada por el bot cuenta como respuesta", () => {
       { text: "DEEPSEEK — REVISIÓN FALLIDA\n\nTimeout", botId: "B123" },
       "DEEPSEEK"
     ),
-    false
+    true
   );
   assert.equal(
     isReviewResponse({ text: "DEEPSEEK — REVISIÓN\n\ntexto humano" }, "DEEPSEEK"),
     false
   );
+});
+
+test("un aviso de fallo canónico cierra solo el handoff exacto de PR o main", () => {
+  const prHead = "a".repeat(40);
+  const mainHead = "b".repeat(40);
+  const prRequest = parseReviewRequest(
+    `GEMINI — ACCIÓN REQUERIDA\nMODE: PR\nPR #79\nHEAD: ${prHead}`,
+    "GEMINI"
+  );
+  const mainRequest = parseReviewRequest(
+    `GEMINI — ACCIÓN REQUERIDA\nMODE: MAIN\nTARGET: main\nHEAD: ${mainHead}`,
+    "GEMINI"
+  );
+  assert.ok(prRequest);
+  assert.ok(mainRequest);
+
+  const failedPr = {
+    text: `GEMINI — REVISIÓN FALLIDA\n\nPR #79: la revisión del HEAD \`${prHead}\` falló antes de completarse.`,
+    botId: "B123",
+  };
+  const failedMain = {
+    text: `GEMINI — REVISIÓN FALLIDA\n\nTARGET: main\nHEAD \`${mainHead}\`: la revisión falló antes de completarse.`,
+    botId: "B123",
+  };
+  assert.equal(isReviewResponseForRequest(failedPr, "GEMINI", prRequest), true);
+  assert.equal(isReviewResponseForRequest(failedMain, "GEMINI", mainRequest), true);
+  assert.equal(isReviewResponseForRequest(failedPr, "GEMINI", mainRequest), false);
+
+  const freshPrRequest = parseReviewRequest(
+    `GEMINI — ACCIÓN REQUERIDA\nMODE: PR\nPR #79\nHEAD: ${"c".repeat(40)}`,
+    "GEMINI"
+  );
+  assert.ok(freshPrRequest);
+  assert.equal(isReviewResponseForRequest(failedPr, "GEMINI", freshPrRequest), false);
 });
 
 test("solo acepta mensajes humanos del canal configurado", () => {

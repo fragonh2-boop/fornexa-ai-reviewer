@@ -29,6 +29,20 @@ export function isReviewResponse(
   );
 }
 
+export function isReviewResponseForRequest(
+  message: { text: string; botId?: string },
+  agentLabel: string,
+  request: ReviewRequest
+): boolean {
+  if (!isReviewResponse(message, agentLabel) || !message.text.includes(request.requestedHead)) {
+    return false;
+  }
+
+  return request.target === "pr"
+    ? message.text.includes(`PR #${request.prNumber}:`)
+    : message.text.includes(`TARGET: ${request.ref}`);
+}
+
 export function parseReviewRequest(text: string, agentLabel: string): ReviewRequest | null {
   const requestMarker = `${agentLabel} — ACCIÓN REQUERIDA`;
   if (!text.split("\n")[0].includes(requestMarker)) return null;

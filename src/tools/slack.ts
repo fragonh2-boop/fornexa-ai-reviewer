@@ -1,7 +1,11 @@
 import { WebClient } from "@slack/web-api";
 import { config } from "../config.js";
 import { splitSlackText } from "../context-onboarding.js";
-import { isReviewResponse, parseReviewRequest, type ReviewRequest } from "../review-request.js";
+import {
+  isReviewResponseForRequest,
+  parseReviewRequest,
+  type ReviewRequest,
+} from "../review-request.js";
 
 const slack = new WebClient(config.slack.botToken);
 
@@ -91,7 +95,8 @@ export function findPendingHandoff(
       if (!parsed) continue;
       // ¿Hay ya una respuesta de esta IA con timestamp posterior?
       const alreadyAnswered = messages.some(
-        (other) => other.ts > msg.ts && isReviewResponse(other, agentLabel) && other.text.includes(parsed.requestedHead) && (parsed.target === "pr" ? other.text.includes(`PR #${parsed.prNumber}:`) : other.text.includes(`TARGET: ${parsed.ref}`))
+        (other) =>
+          other.ts > msg.ts && isReviewResponseForRequest(other, agentLabel, parsed)
       );
       if (alreadyAnswered) continue;
 

@@ -136,7 +136,11 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
     console.log(`[${new Date().toISOString()}] Revisión de estado publicada para TARGET ${ctx.ref}.`);
   } catch (err) {
     if (ownsLock(inFlightReviews, reviewKey, lock.startedAt)) {
-      await notifyFailure(`La revisión ${reviewKey} falló antes de completarse.`);
+      const scope =
+        request.target === "pr"
+          ? `PR #${request.prNumber}: la revisión del HEAD \`${request.requestedHead}\` falló antes de completarse.`
+          : `TARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: la revisión falló antes de completarse.`;
+      await notifyFailure(scope);
     }
     throw err;
   } finally {
