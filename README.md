@@ -98,6 +98,30 @@ defecto), una nueva entrega puede recuperar el candado. Los fallos reales se
 anuncian en Slack como `DEEPSEEK — REVISIÓN FALLIDA`, mientras el detalle
 técnico permanece en el log del servicio.
 
+## Conversación directa mediante `@IA`
+
+El mismo servicio puede responder preguntas conversacionales cuando una
+persona menciona la identidad exacta de su app, por ejemplo:
+
+```text
+@GeminiFornexa resume las opciones y sus riesgos
+```
+
+La respuesta aparece en un hilo y las contestaciones humanas posteriores
+continúan la conversación sin repetir la mención. Este modo está desactivado
+por defecto. Para activarlo en una instancia:
+
+```text
+SLACK_MENTIONS_ENABLED=true
+SLACK_BOT_USER_ID=U...
+```
+
+Cada proveedor requiere su propia app/identidad de Slack y su propia instancia;
+un único bot no puede publicar como varios usuarios `@`. El modo conversacional
+no recibe herramientas ni permisos de GitHub, Slack, terminal o despliegue. Las
+revisiones e implementaciones siguen usando sus protocolos estructurados y HEAD
+exacto. Arquitectura, límites y activación: [docs/slack-provider-mentions.md](docs/slack-provider-mentions.md).
+
 ## Incorporación de contexto de FORNEXA
 
 Además de las revisiones, el bot puede ingerir un documento de incorporación

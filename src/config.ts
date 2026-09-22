@@ -22,9 +22,22 @@ function positiveNumber(name: string, fallback: number): number {
   return value;
 }
 
+function booleanValue(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw || raw.trim() === "") return fallback;
+  if (/^(?:1|true|yes)$/i.test(raw)) return true;
+  if (/^(?:0|false|no)$/i.test(raw)) return false;
+  throw new Error(`${name} debe ser true o false.`);
+}
+
 const provider = (process.env.AI_PROVIDER ?? 'deepseek') as ProviderName;
 if (!Object.hasOwn(endpoints, provider)) throw new Error('Unsupported AI_PROVIDER');
 const prefix = { gpt: 'OPENAI', claude: 'ANTHROPIC', gemini: 'GEMINI', deepseek: 'DEEPSEEK' }[provider];
+const mentionsEnabled = booleanValue("SLACK_MENTIONS_ENABLED", false);
+const botUserId = process.env.SLACK_BOT_USER_ID?.trim() || null;
+if (mentionsEnabled && !/^U[A-Z0-9]+$/.test(botUserId ?? "")) {
+  throw new Error("SLACK_BOT_USER_ID debe contener el ID U… de la identidad de este bot.");
+}
 export const config = {
   model: { provider, apiKey: required(`${prefix}_API_KEY`),
     name: process.env[`${prefix}_MODEL`] ?? (provider === 'deepseek' ? 'deepseek-v4-pro' : required(`${prefix}_MODEL`)),
@@ -34,6 +47,10 @@ export const config = {
     channelId: process.env.SLACK_CHANNEL_ID ?? "C0BT661FYLW",
     agentLabel: process.env.SLACK_AGENT_LABEL ?? provider.toUpperCase(),
     signingSecret: process.env.SLACK_SIGNING_SECRET?.trim() || null,
+    mentions: {
+      enabled: mentionsEnabled,
+      botUserId,
+    },
   },
   github: {
     token: required("GITHUB_TOKEN"),

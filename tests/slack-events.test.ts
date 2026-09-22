@@ -236,4 +236,17 @@ test("solo acepta mensajes humanos del canal configurado", () => {
     ts: "1788677431.036519",
     threadTs: undefined,
   });
+  assert.deepEqual(
+    extractHumanMessage(
+      { ...base, event: { ...base.event, type: "app_mention" } },
+      "C0BT661FYLW"
+    ),
+    {
+      channel: "C0BT661FYLW",
+      text,
+      user: "U123",
+      ts: "1788677431.036519",
+      threadTs: undefined,
+    }
+  );
 });

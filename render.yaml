@@ -21,6 +21,8 @@ services:
         value: C0BT661FYLW
       - key: SLACK_AGENT_LABEL
         value: DEEPSEEK
+      - key: SLACK_MENTIONS_ENABLED
+        value: "false"
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_OWNER

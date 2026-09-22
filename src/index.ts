@@ -12,11 +12,17 @@ import {
   type SlackMessage,
 } from "./tools/slack.js";
 import { getPRContext, getRefContext } from "./tools/github.js";
-import { reviewPR, reviewRepository, runContextOnboarding } from "./agent.js";
+import {
+  answerSlackConversation,
+  reviewPR,
+  reviewRepository,
+  runContextOnboarding,
+} from "./agent.js";
 import {
   extractHumanMessage,
   extractReviewRequest,
   parseSlackEnvelope,
+  type SlackHumanMessageEvent,
   verifySlackSignature,
 } from "./slack-events.js";
 import type { ReviewRequest } from "./review-request.js";
@@ -29,11 +35,22 @@ import {
   isContextThreadRoot,
 } from "./context-onboarding.js";
 import { acquireLock, ownsLock, releaseLock } from "./reliability.js";
+import {
+  buildMentionConversation,
+  containsBotMention,
+  formatMentionFailure,
+  formatMentionResponse,
+  isMentionTerminalResponse,
+  parseMentionPrompt,
+  selectPendingMentionTurn,
+  type SlackMentionTurn,
+} from "./slack-mentions.js";
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const MAX_REMEMBERED_EVENT_IDS = 1000;
 const inFlightReviews = new Map<string, number>();
 const inFlightContextThreads = new Map<string, number>();
+const inFlightMentions = new Map<string, number>();
 const processedEventIds = new Set<string>();
 const reportMalformed = createDiagnosticReporter(config.slack.agentLabel, postToThread);
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
@@ -206,6 +223,127 @@ async function processContextThread(threadTs: string): Promise<void> {
   }
 }
 
+async function processSlackMention(
+  event: SlackHumanMessageEvent,
+  prefetchedThread?: SlackMessage[]
+): Promise<boolean> {
+  if (!config.slack.mentions.enabled || !config.slack.mentions.botUserId) return false;
+  const threadTs = event.threadTs ?? event.ts;
+  const messages = prefetchedThread ?? (await readThread(threadTs));
+  if (!messages.some((message) => message.ts === event.ts)) {
+    messages.push({
+      ts: event.ts,
+      text: event.text,
+      user: event.user,
+      threadTs: event.threadTs,
+    });
+  }
+
+  const turn = selectPendingMentionTurn({
+    channel: event.channel,
+    threadTs,
+    messages,
+    botUserId: config.slack.mentions.botUserId,
+    agentLabel: config.slack.agentLabel,
+  });
+
+  if (!turn) {
+    const root = messages.find((message) => message.ts === threadTs);
+    const belongsToMentionThread = Boolean(
+      root && containsBotMention(root.text, config.slack.mentions.botUserId)
+    );
+    if (!belongsToMentionThread) return false;
+    if (
+      messages.some((message) =>
+        isMentionTerminalResponse(message, config.slack.agentLabel, event.ts)
+      )
+    ) {
+      return false;
+    }
+    const parsed = parseMentionPrompt(event.text, config.slack.mentions.botUserId);
+    if (parsed.ok) return false;
+    await postToThread(
+      formatMentionFailure(config.slack.agentLabel, event.ts, parsed.error),
+      threadTs
+    );
+    return true;
+  }
+
+  const key = `mention:${turn.ts}`;
+  const lock = acquireLock(inFlightMentions, key, staleLockMs);
+  if (!lock.acquired) return false;
+
+  try {
+    const latest = prefetchedThread ? messages : await readThread(turn.threadTs);
+    if (
+      latest.some((message) =>
+        isMentionTerminalResponse(message, config.slack.agentLabel, turn.ts)
+      )
+    ) {
+      return false;
+    }
+    const conversation = buildMentionConversation({
+      messages: latest,
+      turn,
+      botUserId: config.slack.mentions.botUserId,
+      agentLabel: config.slack.agentLabel,
+    });
+    const response = await answerSlackConversation(conversation);
+    if (!ownsLock(inFlightMentions, key, lock.startedAt)) return false;
+    await postToThread(
+      formatMentionResponse(config.slack.agentLabel, turn.ts, response),
+      turn.threadTs
+    );
+    console.log(
+      `[${new Date().toISOString()}] Respuesta de ${config.slack.agentLabel} publicada para Slack ${turn.ts}.`
+    );
+    return true;
+  } catch (err) {
+    if (ownsLock(inFlightMentions, key, lock.startedAt)) {
+      await postToThread(
+        formatMentionFailure(
+          config.slack.agentLabel,
+          turn.ts,
+          "No se ha podido completar la consulta. Vuelve a mencionar al bot para reintentarlo."
+        ),
+        turn.threadTs
+      );
+    }
+    throw err;
+  } finally {
+    releaseLock(inFlightMentions, key, lock.startedAt);
+  }
+}
+
+async function findPendingMention(messages: SlackMessage[]): Promise<{
+  turn: SlackMentionTurn;
+  thread: SlackMessage[];
+} | null> {
+  if (!config.slack.mentions.enabled || !config.slack.mentions.botUserId) return null;
+  const roots = messages
+    .filter(
+      (message) =>
+        !message.botId &&
+        Boolean(message.user) &&
+        (!message.threadTs || message.threadTs === message.ts) &&
+        containsBotMention(message.text, config.slack.mentions.botUserId!)
+    )
+    .slice(0, 50);
+
+  for (const root of roots) {
+    const thread = await readThread(root.ts);
+    const turn = selectPendingMentionTurn({
+      channel: config.slack.channelId,
+      threadTs: root.ts,
+      messages: thread,
+      botUserId: config.slack.mentions.botUserId,
+      agentLabel: config.slack.agentLabel,
+    });
+    if (turn) return { turn, thread };
+  }
+  return null;
+}
+
 async function notifyFailure(scope: string): Promise<void> {
   try {
     await postToChannel(
@@ -253,6 +391,21 @@ async function tick(): Promise<void> {
   const pendingContext = await findPendingContextThread(messages);
   if (pendingContext) {
     await processContextThread(pendingContext.threadTs);
+    return;
+  }
+
+  const pendingMention = await findPendingMention(messages);
+  if (pendingMention) {
+    await processSlackMention(
+      {
+        channel: pendingMention.turn.channel,
+        text: pendingMention.turn.prompt,
+        user: pendingMention.turn.user,
+        ts: pendingMention.turn.ts,
+        threadTs: pendingMention.turn.threadTs,
+      },
+      pendingMention.thread
+    );
     return;
   }
 
@@ -319,13 +472,22 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
     config.slack.channelId,
     config.slack.agentLabel
   );
-  if (!request) return;
+  if (request) {
+    setImmediate(() => {
+      processReviewRequest(request).catch((err) =>
+        console.error("Error procesando el evento de Slack:", err)
+      );
+    });
+    return;
+  }
 
-  setImmediate(() => {
-    processReviewRequest(request).catch((err) =>
-      console.error("Error procesando el evento de Slack:", err)
-    );
-  });
+  if (humanMessage && config.slack.mentions.enabled) {
+    setImmediate(() => {
+      processSlackMention(humanMessage).catch((err) =>
+        console.error("Error procesando la mención de Slack:", err)
+      );
+    });
+  }
 }
 
 function startHttpServer(): void {
