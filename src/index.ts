@@ -40,6 +40,7 @@ import {
   containsBotMention,
   formatMentionFailure,
   formatMentionResponse,
+  formatMentionResponseParts,
   isDelegatedAgentMessage,
   isMentionTerminalResponse,
   MAX_MENTION_TURNS,
@@ -296,7 +297,7 @@ async function processSlackMention(
   if (!lock.acquired) return false;
 
   try {
-    const latest = prefetchedThread ? messages : await readThread(turn.threadTs);
+    const latest = await readThread(turn.threadTs);
     if (
       latest.some((message) =>
         isMentionTerminalResponse(message, config.slack.agentLabel, turn.ts)
@@ -313,7 +314,7 @@ async function processSlackMention(
     const response = await answerSlackConversation(conversation);
     if (!ownsLock(inFlightMentions, key, lock.startedAt)) return false;
     await postToThread(
-      formatMentionResponse(config.slack.agentLabel, turn.ts, response),
+      formatMentionResponseParts(config.slack.agentLabel, turn.ts, response),
       turn.threadTs
     );
     console.log(

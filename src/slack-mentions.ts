@@ -1,5 +1,5 @@
 import type { ChatCompletionMessageParam } from "openai/resources/index.js";
-import { containsPotentialSecret } from "./context-onboarding.js";
+import { containsPotentialSecret, splitSlackText } from "./context-onboarding.js";
 
 const MAX_MENTION_CHARS = 12 * 1024;
 const MAX_HISTORY_CHARS = 64 * 1024;
@@ -157,14 +157,45 @@ export function selectPendingMentionTurn(params: {
   return null;
 }
 
-function assistantContent(text: string, agentLabel: string): string | null {
-  if (text.split("\n", 1)[0].trim() !== mentionResponseMarker(agentLabel)) return null;
-  return text
-    .split("\n")
-    .slice(1)
-    .filter((line) => !line.startsWith("SLACK_REQUEST_TS:"))
+export function extractMentionResponseContent(
+  text: string,
+  agentLabel: string
+): { requestTs?: string; content: string } | null {
+  const trimmed = text.trim();
+  const firstLine = trimmed.split("\n", 1)[0].trim();
+  const isLabeled = firstLine === mentionResponseMarker(agentLabel);
+
+  if (!isLabeled) {
+    const isOtherAgentHeader = /^[A-Z]+ — (?:RESPUESTA|ACCIÓN|REVISIÓN)/.test(firstLine);
+    const hasRespuestaSuffix = /\n\s*[*_]*Respuesta \d+\/\d+[*_]*\s*$/i.test(trimmed);
+    if (isOtherAgentHeader || !hasRespuestaSuffix) return null;
+    const cleaned = trimmed.replace(/\n\s*[*_]*Respuesta \d+\/\d+[*_]*\s*$/i, "").trim();
+    return cleaned ? { content: cleaned } : null;
+  }
+
+  const lines = trimmed.split("\n");
+  let requestTs: string | undefined;
+  const contentLines: string[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith("SLACK_REQUEST_TS:")) {
+      requestTs = line.replace("SLACK_REQUEST_TS:", "").trim();
+      continue;
+    }
+    contentLines.push(line);
+  }
+
+  const rawContent = contentLines
     .join("\n")
+    .replace(/\n\s*[*_]*Respuesta \d+\/\d+[*_]*\s*$/i, "")
     .trim();
+  return rawContent ? { requestTs, content: rawContent } : null;
+}
+
+export function assistantContent(text: string, agentLabel: string): string | null {
+  const extracted = extractMentionResponseContent(text, agentLabel);
+  return extracted ? extracted.content : null;
 }
 
 export function buildMentionConversation(params: {
@@ -176,17 +207,36 @@ export function buildMentionConversation(params: {
   const { turn, botUserId, agentLabel } = params;
   const normalized: ChatCompletionMessageParam[] = [];
 
-  for (const message of [...params.messages].sort((left, right) => left.ts.localeCompare(right.ts))) {
+  const sorted = [...params.messages].sort((left, right) => left.ts.localeCompare(right.ts));
+  let currentAssistantRequestTs: string | undefined;
+
+  for (const message of sorted) {
     if (message.ts > turn.ts) continue;
+
     if (isHuman(message)) {
+      currentAssistantRequestTs = undefined;
       const parsed = parseMentionPrompt(message.text, botUserId);
       if (!parsed.ok) continue;
       normalized.push({ role: "user", content: parsed.prompt });
       continue;
     }
+
     if (message.botId) {
-      const content = assistantContent(message.text, agentLabel);
-      if (content) normalized.push({ role: "assistant", content });
+      const extracted = extractMentionResponseContent(message.text, agentLabel);
+      if (!extracted) continue;
+
+      const last = normalized[normalized.length - 1];
+      if (
+        last &&
+        last.role === "assistant" &&
+        ((extracted.requestTs && extracted.requestTs === currentAssistantRequestTs) ||
+          (!extracted.requestTs && currentAssistantRequestTs))
+      ) {
+        last.content = `${last.content}\n\n${extracted.content}`.trim();
+      } else {
+        currentAssistantRequestTs = extracted.requestTs;
+        normalized.push({ role: "assistant", content: extracted.content });
+      }
     }
   }
 
@@ -201,6 +251,26 @@ export function buildMentionConversation(params: {
     throw new Error("Mention conversation exceeds context budget");
   }
   return bounded;
+}
+
+export function formatMentionResponseParts(
+  agentLabel: string,
+  requestTs: string,
+  response: string,
+  maxChars = 3800
+): string[] {
+  const trimmed = response.trim();
+  const header = `${mentionResponseMarker(agentLabel)}\n${mentionRequestMarker(requestTs)}\n\n`;
+  const maxBodyChars = Math.max(200, maxChars - header.length - 30);
+  const bodyChunks = splitSlackText(trimmed, maxBodyChars);
+
+  if (bodyChunks.length <= 1) {
+    return [`${header}${trimmed}`];
+  }
+
+  return bodyChunks.map(
+    (chunk, index) => `${header}${chunk}\n\n_Respuesta ${index + 1}/${bodyChunks.length}_`
+  );
 }
 
 export function formatMentionResponse(

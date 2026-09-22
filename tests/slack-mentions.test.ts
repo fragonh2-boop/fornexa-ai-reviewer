@@ -5,6 +5,7 @@ import {
   containsBotMention,
   formatMentionFailure,
   formatMentionResponse,
+  formatMentionResponseParts,
   isDelegatedAgentMessage,
   isMentionTerminalResponse,
   MAX_MENTION_TURNS,
@@ -26,6 +27,10 @@ test("una mención exacta crea una consulta y elimina solo la identidad del bot"
   assert.equal(parseMentionPrompt(`<@${botUserId}>`, botUserId).ok, false);
   assert.equal(
     parseMentionPrompt(`<@${botUserId}> token xoxb-${"a".repeat(30)}`, botUserId).ok,
+    false
+  );
+  assert.equal(
+    parseMentionPrompt(`<@${botUserId}> clave AIzaSy${"A".repeat(33)}`, botUserId).ok,
     false
   );
 });
@@ -179,4 +184,133 @@ test("corta un hilo después de ocho turnos humanos", () => {
     agentLabel: "GEMINI",
   });
   assert.equal(turn, null);
+});
+
+test("preserva y reconstruye íntegramente respuestas divididas (>3800 caracteres) en el siguiente turno", () => {
+  const p1 = "Primera parte explicativa detallada sobre arquitectura y diseño de sistemas. ".repeat(30).trim();
+  const p2 = "Segunda parte técnica profunda con código, ejemplos y casos límite. ".repeat(30).trim();
+  const longAnswer = `${p1}\n\n${p2}`;
+  assert.equal(longAnswer.length > 3800, true);
+
+  const root = {
+    ts: "1000.000001",
+    text: `<@${botUserId}> genera un informe extenso`,
+    user: "UFRAN",
+  };
+
+  const parts = formatMentionResponseParts("GEMINI", root.ts, longAnswer);
+  assert.equal(parts.length >= 2, true);
+  assert.equal(parts.every((p) => p.length <= 3800), true);
+  assert.equal(parts[0].includes("GEMINI — RESPUESTA"), true);
+  assert.equal(parts[1].includes("GEMINI — RESPUESTA"), true);
+  assert.equal(parts[0].includes(`SLACK_REQUEST_TS: ${root.ts}`), true);
+  assert.equal(parts[1].includes(`SLACK_REQUEST_TS: ${root.ts}`), true);
+  assert.equal(parts[0].includes("_Respuesta 1/"), true);
+  assert.equal(parts[1].includes("_Respuesta 2/"), true);
+
+  const botPart1 = {
+    ts: "1000.000002",
+    threadTs: root.ts,
+    botId: "B-GEMINI",
+    text: parts[0],
+  };
+  const botPart2 = {
+    ts: "1000.000003",
+    threadTs: root.ts,
+    botId: "B-GEMINI",
+    text: parts[1],
+  };
+  const followup = {
+    ts: "1000.000004",
+    threadTs: root.ts,
+    user: "UFRAN",
+    text: "¿puedes resumir los puntos clave de ese informe?",
+  };
+
+  const turn = selectPendingMentionTurn({
+    channel,
+    threadTs: root.ts,
+    messages: [root, botPart1, botPart2, followup],
+    botUserId,
+    agentLabel: "GEMINI",
+  });
+  assert.equal(turn?.ts, followup.ts);
+  assert.equal(turn?.prompt, followup.text);
+
+  const conversation = buildMentionConversation({
+    messages: [root, botPart1, botPart2, followup],
+    turn: turn!,
+    botUserId,
+    agentLabel: "GEMINI",
+  });
+
+  assert.equal(conversation.length, 3);
+  assert.deepEqual(conversation[0], {
+    role: "user",
+    content: "genera un informe extenso",
+  });
+  assert.equal(conversation[1].role, "assistant");
+  assert.equal(conversation[1].content, longAnswer.trim());
+  assert.equal(conversation[1].content.includes("GEMINI — RESPUESTA"), false);
+  assert.equal(conversation[1].content.includes("SLACK_REQUEST_TS:"), false);
+  assert.equal(conversation[1].content.includes("_Respuesta 1/"), false);
+  assert.equal(conversation[1].content.includes("_Respuesta 2/"), false);
+  assert.deepEqual(conversation[2], {
+    role: "user",
+    content: "¿puedes resumir los puntos clave de ese informe?",
+  });
+});
+
+test("no confunde las partes de la respuesta con mensajes de otros agentes en el hilo", () => {
+  const root = {
+    ts: "1000.000001",
+    text: `<@${botUserId}> consulta para Gemini`,
+    user: "UFRAN",
+  };
+  const geminiPart1 = {
+    ts: "1000.000002",
+    threadTs: root.ts,
+    botId: "B-GEMINI",
+    text: formatMentionResponse("GEMINI", root.ts, "Parte uno de Gemini."),
+  };
+  const claudeInterference = {
+    ts: "1000.000003",
+    threadTs: root.ts,
+    botId: "B-CLAUDE",
+    text: formatMentionResponse("CLAUDE", root.ts, "Interferencia de Claude en el mismo hilo."),
+  };
+  const geminiPart2 = {
+    ts: "1000.000004",
+    threadTs: root.ts,
+    botId: "B-GEMINI",
+    text: formatMentionResponse("GEMINI", root.ts, "Parte dos de Gemini."),
+  };
+  const followup = {
+    ts: "1000.000005",
+    threadTs: root.ts,
+    user: "UFRAN",
+    text: "pregunta posterior",
+  };
+
+  const conversation = buildMentionConversation({
+    messages: [root, geminiPart1, claudeInterference, geminiPart2, followup],
+    turn: {
+      channel,
+      ts: followup.ts,
+      threadTs: root.ts,
+      user: "UFRAN",
+      prompt: followup.text,
+    },
+    botUserId,
+    agentLabel: "GEMINI",
+  });
+
+  assert.equal(conversation.length, 3);
+  assert.deepEqual(conversation[0], { role: "user", content: "consulta para Gemini" });
+  assert.deepEqual(conversation[1], {
+    role: "assistant",
+    content: "Parte uno de Gemini.\n\nParte dos de Gemini.",
+  });
+  assert.equal(conversation[1].content.includes("Interferencia de Claude"), false);
+  assert.deepEqual(conversation[2], { role: "user", content: "pregunta posterior" });
 });

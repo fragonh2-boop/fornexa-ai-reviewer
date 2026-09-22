@@ -69,6 +69,7 @@ Configure only the selected provider's API key and model. Keep the GitHub token 
 - A failed turn receives a terminal failure marker and is not retried forever. A human can explicitly mention the bot again.
 - Polling examines at most 50 recent mention threads per cycle as recovery for missed events.
 - State is reconstructed from Slack threads. In-memory event dedupe is an optimization; exact response markers provide restart-safe turn dedupe.
+- Configure exactly one replica/instance per provider service; in-memory lock maps and active event deduplication require single-instance deployment per provider.
 
 ## Activation order
 
