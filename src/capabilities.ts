@@ -21,7 +21,12 @@ export async function runCapabilities(adapter: ModelAdapter, messages: ChatCompl
       const capability = capabilities.find(c => c.definition.function.name === call.function.name);
       const args: unknown = JSON.parse(call.function.arguments);
       if (!capability || !args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid tool call');
-      const content = await capability.execute(args as Record<string, unknown>);
+      let content: string;
+      try {
+        content = await capability.execute(args as Record<string, unknown>);
+      } catch (err) {
+        content = `Error: ${(err as Error).message}`;
+      }
       if (Buffer.byteLength(content) > 100_000) throw new Error('File budget exceeded');
       bytes += Buffer.byteLength(content);
       messages.push({ role: 'tool', tool_call_id: call.id, content });
