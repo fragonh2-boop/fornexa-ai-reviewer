@@ -121,7 +121,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
     if (ctx.headSha.toLowerCase() !== request.requestedHead) {
       if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
       await postToChannel(
-        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nTARGET ${request.ref}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`
+        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nTARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`
       );
       console.log(
         `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en TARGET ${request.ref}.`
@@ -136,7 +136,11 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
     console.log(`[${new Date().toISOString()}] Revisión de estado publicada para TARGET ${ctx.ref}.`);
   } catch (err) {
     if (ownsLock(inFlightReviews, reviewKey, lock.startedAt)) {
-      await notifyFailure(`La revisión ${reviewKey} falló antes de completarse.`);
+      const scope =
+        request.target === "pr"
+          ? `PR #${request.prNumber}: la revisión del HEAD \`${request.requestedHead}\` falló antes de completarse.`
+          : `TARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: la revisión falló antes de completarse.`;
+      await notifyFailure(scope);
     }
     throw err;
   } finally {
