@@ -82,6 +82,7 @@ test("rechaza paquetes incompletos, autores distintos y secretos", () => {
     false
   );
   assert.equal(containsPotentialSecret("-----BEGIN PRIVATE KEY-----"), true);
+  assert.equal(containsPotentialSecret(`AIzaSy${"A".repeat(33)}`), true);
 });
 
 test("reconoce exclusivamente el final o la orden exacta como disparador", () => {

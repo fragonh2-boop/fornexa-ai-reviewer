@@ -79,7 +79,7 @@ export function extractHumanMessage(
   const event = envelope.event;
   if (
     !event ||
-    event.type !== "message" ||
+    (event.type !== "message" && event.type !== "app_mention") ||
     event.subtype ||
     event.bot_id ||
     event.channel !== expectedChannel ||

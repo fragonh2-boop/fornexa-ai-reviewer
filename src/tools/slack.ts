@@ -1,6 +1,7 @@
 import { WebClient } from "@slack/web-api";
 import { config } from "../config.js";
 import { splitSlackText } from "../context-onboarding.js";
+import { formatMentionResponseParts } from "../slack-mentions.js";
 import {
   isReviewResponseForRequest,
   parseReviewRequest,
@@ -117,14 +118,31 @@ export async function postToChannel(text: string): Promise<void> {
   });
 }
 
-export async function postToThread(text: string, threadTs: string): Promise<void> {
-  const chunks = splitSlackText(text);
-  for (let index = 0; index < chunks.length; index++) {
-    const suffix = chunks.length > 1 ? `\n\n_Respuesta ${index + 1}/${chunks.length}_` : "";
+export async function postToThread(text: string | string[], threadTs: string): Promise<void> {
+  let chunks: string[];
+  if (Array.isArray(text)) {
+    chunks = text;
+  } else {
+    const mentionMatch = text.match(
+      /^([A-Z]+ — RESPUESTA)\n(SLACK_REQUEST_TS: [^\n]+)\n\n([\s\S]*)$/
+    );
+    if (mentionMatch && text.length > 3800) {
+      const agentLabel = mentionMatch[1].replace(" — RESPUESTA", "").trim();
+      const requestTs = mentionMatch[2].replace("SLACK_REQUEST_TS:", "").trim();
+      chunks = formatMentionResponseParts(agentLabel, requestTs, mentionMatch[3]);
+    } else {
+      const rawChunks = splitSlackText(text);
+      chunks = rawChunks.map((chunk, index) => {
+        const suffix = rawChunks.length > 1 ? `\n\n_Respuesta ${index + 1}/${rawChunks.length}_` : "";
+        return `${chunk}${suffix}`;
+      });
+    }
+  }
+  for (const chunk of chunks) {
     await slack.chat.postMessage({
       channel: config.slack.channelId,
       thread_ts: threadTs,
-      text: `${chunks[index]}${suffix}`,
+      text: chunk,
       unfurl_links: false,
     });
   }
