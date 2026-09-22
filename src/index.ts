@@ -40,7 +40,10 @@ import {
   containsBotMention,
   formatMentionFailure,
   formatMentionResponse,
+  isDelegatedAgentMessage,
   isMentionTerminalResponse,
+  MAX_MENTION_TURNS,
+  mentionTurnLimitReached,
   parseMentionPrompt,
   selectPendingMentionTurn,
   type SlackMentionTurn,
@@ -228,6 +231,7 @@ async function processSlackMention(
   prefetchedThread?: SlackMessage[]
 ): Promise<boolean> {
   if (!config.slack.mentions.enabled || !config.slack.mentions.botUserId) return false;
+  if (isDelegatedAgentMessage(event.text)) return false;
   const threadTs = event.threadTs ?? event.ts;
   const messages = prefetchedThread ?? (await readThread(threadTs));
   if (!messages.some((message) => message.ts === event.ts)) {
@@ -259,6 +263,24 @@ async function processSlackMention(
       )
     ) {
       return false;
+    }
+    if (
+      mentionTurnLimitReached({
+        messages,
+        threadTs,
+        requestTs: event.ts,
+        botUserId: config.slack.mentions.botUserId,
+      })
+    ) {
+      await postToThread(
+        formatMentionFailure(
+          config.slack.agentLabel,
+          event.ts,
+          `El hilo alcanzó el máximo de ${MAX_MENTION_TURNS} turnos humanos. Abre uno nuevo mencionando al bot.`
+        ),
+        threadTs
+      );
+      return true;
     }
     const parsed = parseMentionPrompt(event.text, config.slack.mentions.botUserId);
     if (parsed.ok) return false;
@@ -325,6 +347,7 @@ async function findPendingMention(messages: SlackMessage[]): Promise<{
       (message) =>
         !message.botId &&
         Boolean(message.user) &&
+        !isDelegatedAgentMessage(message.text) &&
         (!message.threadTs || message.threadTs === message.ts) &&
         containsBotMention(message.text, config.slack.mentions.botUserId!)
     )

@@ -5,7 +5,10 @@ import {
   containsBotMention,
   formatMentionFailure,
   formatMentionResponse,
+  isDelegatedAgentMessage,
   isMentionTerminalResponse,
+  MAX_MENTION_TURNS,
+  mentionTurnLimitReached,
   parseMentionPrompt,
   selectPendingMentionTurn,
 } from "../src/slack-mentions.js";
@@ -105,6 +108,73 @@ test("un hilo dirigido a otra identidad no se procesa", () => {
         user: "UFRAN",
       },
     ],
+    botUserId,
+    agentLabel: "GEMINI",
+  });
+  assert.equal(turn, null);
+});
+
+test("ignora mensajes delegados por otra IA aunque Slack los atribuya al usuario", () => {
+  const delegated = `<@${botUserId}> revisa esto\n\n*Enviado usando* <@U-CLAUDE>`;
+  assert.equal(isDelegatedAgentMessage(delegated), true);
+  assert.equal(isDelegatedAgentMessage("_Enviado usando Claude_"), true);
+  assert.equal(isDelegatedAgentMessage("El usuario escribió: enviado usando palabras simples"), false);
+
+  const turn = selectPendingMentionTurn({
+    channel,
+    threadTs: "1000.1",
+    messages: [{ ts: "1000.1", text: delegated, user: "UFRAN" }],
+    botUserId,
+    agentLabel: "GEMINI",
+  });
+  assert.equal(turn, null);
+});
+
+test("corta un hilo después de ocho turnos humanos", () => {
+  const root = {
+    ts: "1000.000001",
+    text: `<@${botUserId}> turno 1`,
+    user: "UFRAN",
+  };
+  const messages = [root];
+  for (let index = 0; index < MAX_MENTION_TURNS; index += 1) {
+    const requestTs = `1000.${String(index * 2 + 1).padStart(6, "0")}`;
+    if (index > 0) {
+      messages.push({
+        ts: requestTs,
+        text: `turno ${index + 1}`,
+        user: "UFRAN",
+        threadTs: root.ts,
+      });
+    }
+    messages.push({
+      ts: `1000.${String(index * 2 + 2).padStart(6, "0")}`,
+      text: formatMentionResponse("GEMINI", requestTs, `respuesta ${index + 1}`),
+      botId: "B-GEMINI",
+      threadTs: root.ts,
+    });
+  }
+  const ninth = {
+    ts: "1000.000017",
+    text: "turno 9",
+    user: "UFRAN",
+    threadTs: root.ts,
+  };
+  messages.push(ninth);
+  assert.equal(
+    mentionTurnLimitReached({
+      messages,
+      threadTs: root.ts,
+      requestTs: ninth.ts,
+      botUserId,
+    }),
+    true
+  );
+
+  const turn = selectPendingMentionTurn({
+    channel,
+    threadTs: root.ts,
+    messages,
     botUserId,
     agentLabel: "GEMINI",
   });

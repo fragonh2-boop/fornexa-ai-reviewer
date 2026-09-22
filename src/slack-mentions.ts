@@ -4,6 +4,7 @@ import { containsPotentialSecret } from "./context-onboarding.js";
 const MAX_MENTION_CHARS = 12 * 1024;
 const MAX_HISTORY_CHARS = 64 * 1024;
 const MAX_HISTORY_MESSAGES = 20;
+export const MAX_MENTION_TURNS = 8;
 
 export interface MentionSlackMessage {
   ts: string;
@@ -35,6 +36,10 @@ export function mentionTokenPattern(botUserId: string): RegExp {
 
 export function containsBotMention(text: string, botUserId: string): boolean {
   return mentionTokenPattern(botUserId).test(text);
+}
+
+export function isDelegatedAgentMessage(text: string): boolean {
+  return /(?:^|\n)\s*[*_]*Enviado usando[*_]*(?:\s|$)/i.test(text);
 }
 
 export function parseMentionPrompt(text: string, botUserId: string): MentionPromptResult {
@@ -81,7 +86,38 @@ export function isMentionTerminalResponse(
 }
 
 function isHuman(message: MentionSlackMessage): message is MentionSlackMessage & { user: string } {
-  return Boolean(message.user && !message.botId && message.text.trim());
+  return Boolean(
+    message.user &&
+      !message.botId &&
+      message.text.trim() &&
+      !isDelegatedAgentMessage(message.text)
+  );
+}
+
+function mentionTurns(
+  messages: MentionSlackMessage[],
+  threadTs: string
+): Array<MentionSlackMessage & { user: string }> {
+  return [...messages]
+    .sort((left, right) => left.ts.localeCompare(right.ts))
+    .filter(
+      (message): message is MentionSlackMessage & { user: string } =>
+        isHuman(message) &&
+        (message.ts === threadTs || message.threadTs === threadTs)
+    );
+}
+
+export function mentionTurnLimitReached(params: {
+  messages: MentionSlackMessage[];
+  threadTs: string;
+  requestTs: string;
+  botUserId: string;
+}): boolean {
+  const root = params.messages.find((message) => message.ts === params.threadTs);
+  if (!root || !isHuman(root) || !containsBotMention(root.text, params.botUserId)) return false;
+  return mentionTurns(params.messages, params.threadTs).findIndex(
+    (message) => message.ts === params.requestTs
+  ) >= MAX_MENTION_TURNS;
 }
 
 export function selectPendingMentionTurn(params: {
@@ -99,11 +135,9 @@ export function selectPendingMentionTurn(params: {
   const rootAnswered = messages.some((message) =>
     isMentionTerminalResponse(message, agentLabel, root.ts)
   );
-  const candidates = messages.filter(
-    (message) =>
-      isHuman(message) &&
-      (message.ts === root.ts || (rootAnswered && message.threadTs === root.ts))
-  );
+  const candidates = mentionTurns(messages, root.ts)
+    .filter((message) => message.ts === root.ts || rootAnswered)
+    .slice(0, MAX_MENTION_TURNS);
 
   for (const message of candidates) {
     if (messages.some((other) => isMentionTerminalResponse(other, agentLabel, message.ts))) {

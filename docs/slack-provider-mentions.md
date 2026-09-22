@@ -28,6 +28,8 @@ All four instances execute the same code:
 5. The common provider adapter calls GPT, Claude, Gemini or DeepSeek according to `AI_PROVIDER`.
 6. A terminal marker ties the response to the exact Slack message timestamp. Event retries and the polling fallback cannot answer that turn twice.
 
+Messages delegated through another desktop AI are ignored when they carry the `Enviado usando` footer. This matters because GPT and Claude can publish through Fran's Slack identity: treating those messages as ordinary human input would allow one AI to mention another and create a loop. A conversation also stops after eight human turns and must continue in a new mention thread.
+
 The mention path is deliberately conversational. It receives no GitHub, Slack, filesystem, deployment or write tools. A request to inspect or change code must use the existing review/implementation protocol with an exact target and HEAD. This preserves `docs/ai/HANDOFF.md` as the authority for risk and independent review.
 
 ## Per-instance configuration
@@ -59,7 +61,9 @@ Configure only the selected provider's API key and model. Keep the GitHub token 
 
 - Only the configured channel is accepted.
 - Bot messages, Slack subtypes and other bot identities are ignored.
+- Messages carrying the standard `Enviado usando` delegated-agent footer are ignored even if Slack attributes them to a human account.
 - A prompt is limited to 12 KiB; retained conversation is limited to 20 messages and 64 KiB.
+- A thread is limited to 8 human turns. The ninth receives a terminal failure and cannot trigger a model call.
 - Text matching known secret formats is rejected before a model call.
 - Model calls keep the existing timeout and provider response validation.
 - A failed turn receives a terminal failure marker and is not retried forever. A human can explicitly mention the bot again.
