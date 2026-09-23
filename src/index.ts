@@ -24,6 +24,7 @@ import {
   handleSidecarResponse,
   sendJson,
   readRawBody,
+  verifySidecarAuth,
 } from "./tools/external-services.js";
 import {
   extractHumanMessage,
@@ -57,7 +58,6 @@ import {
   type SlackMentionTurn,
 } from "./slack-mentions.js";
 
-const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const MAX_REMEMBERED_EVENT_IDS = 1000;
 const inFlightReviews = new Map<string, number>();
 const inFlightContextThreads = new Map<string, number>();
@@ -524,7 +524,13 @@ function startHttpServer(): void {
       }
 
       if (req.method === "GET" && pathname === "/sidecar/status") {
-        sendJson(res, 200, { ok: true, online: sidecarManager.isOnline() });
+        const isAuthorized = config.sidecarToken
+          ? verifySidecarAuth(req, config.sidecarToken)
+          : false;
+        sendJson(res, 200, {
+          ok: true,
+          online: isAuthorized ? sidecarManager.isOnline() : false,
+        });
         return;
       }
 

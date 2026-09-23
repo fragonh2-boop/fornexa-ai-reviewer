@@ -1,10 +1,10 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import "dotenv/config";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const RENDER_URL = (
   process.env.RENDER_URL ?? "https://fornexa-ai-reviewer-gemini.onrender.com"
@@ -22,126 +22,126 @@ if (!SIDECAR_AUTH_TOKEN) {
   process.exit(1);
 }
 
-// Comandos o patrones bloqueados por seguridad
-const FORBIDDEN_PATTERNS = [
-  /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f?|-f)/i,
-  /\bsudo\b/i,
-  /\bmkfs\b/i,
-  /\bdd\b/i,
-  /\bchmod\s+-R\b/i,
-  /\bchown\s+-R\b/i,
-  />\s*\/dev\//i,
-  /\/etc\//i,
-  /\/System\//i,
-  /\/Library\//i,
-];
+async function runExecFile(file: string, args: string[]): Promise<string> {
+  try {
+    const { stdout, stderr } = await execFileAsync(file, args, {
+      cwd: WORKSPACE_DIR,
+      timeout: 25_000,
+      maxBuffer: 1024 * 1024 * 2, // 2MB
+      shell: false, // Bypasses shell parsing completely (MUST-2)
+    });
 
-function isSafeCommand(cmd: string): boolean {
-  for (const pattern of FORBIDDEN_PATTERNS) {
-    if (pattern.test(cmd)) return false;
+    const out = stdout.trim();
+    const err = stderr.trim();
+    let combined = out;
+    if (err) {
+      combined = combined ? `${combined}\n[stderr]\n${err}` : `[stderr]\n${err}`;
+    }
+
+    if (!combined) {
+      return `Comando "${file} ${args.join(" ")}" ejecutado con éxito (salida vacía, código 0).`;
+    }
+
+    const MAX_LENGTH = 15_000;
+    if (combined.length > MAX_LENGTH) {
+      return (
+        combined.slice(0, MAX_LENGTH) +
+        `\n... [Salida truncada a ${MAX_LENGTH} caracteres]`
+      );
+    }
+    return combined;
+  } catch (err: any) {
+    const msg = err.stdout || err.stderr || err.message;
+    return `Fallo ejecutando "${file} ${args.join(" ")}":\n${String(msg).slice(0, 5000)}`;
   }
-  return true;
 }
 
 async function executeTask(taskPrompt: string): Promise<string> {
   const prompt = taskPrompt.trim();
   console.log(`[Sidecar] Ejecutando tarea: "${prompt}"`);
 
-  // 1. Tareas comunes predefinidas
   const lower = prompt.toLowerCase();
 
-  let commandToRun: string | null = null;
-
+  // 1. Operaciones seguras con Git (sin shell)
   if (
-    lower.includes("git status") ||
+    lower === "git status" ||
+    lower === "git status -s" ||
+    lower === "git status --short" ||
     lower.includes("estado de git") ||
     lower.includes("estado del repositorio")
   ) {
-    commandToRun = "git status -s && git log -n 3 --oneline";
-  } else if (lower.includes("git diff") || lower.includes("cambios sin commit")) {
-    commandToRun = "git diff --stat";
-  } else if (
-    lower.includes("npm test") ||
+    return runExecFile("git", ["status", "-s"]);
+  }
+
+  if (
+    lower === "git diff" ||
+    lower === "git diff --stat" ||
+    lower.includes("cambios sin commit")
+  ) {
+    return runExecFile("git", ["diff", "--stat"]);
+  }
+
+  if (
+    lower === "git log" ||
+    lower.includes("últimos commits") ||
+    lower.includes("historial de commits")
+  ) {
+    return runExecFile("git", ["log", "-n", "5", "--oneline"]);
+  }
+
+  if (lower === "git branch" || lower === "git branch -a") {
+    return runExecFile("git", ["branch", "-a"]);
+  }
+
+  // 2. Operaciones NPM predefinidas y fijas (MUST-2: no se admite node -e ni scripts arbitrarios)
+  if (
+    lower === "npm test" ||
     lower.includes("pasan los tests") ||
     lower.includes("ejecuta los tests")
   ) {
-    commandToRun = "npm test";
-  } else if (
-    lower.includes("npm run build") ||
-    lower.includes("compila") ||
-    lower.includes("build")
+    return runExecFile("npm", ["test"]);
+  }
+
+  if (
+    lower === "npm run build" ||
+    lower === "compila" ||
+    lower.includes("compilar el proyecto")
   ) {
-    commandToRun = "npm run build";
-  } else if (prompt.startsWith("run:") || prompt.startsWith("exec:")) {
-    commandToRun = prompt.replace(/^(?:run|exec):\s*/i, "").trim();
-  } else {
-    // Si es un comando directo tipo "git ...", "ls ...", etc.
-    const firstWord = prompt.split(/\s+/)[0];
-    const allowedBinaries = ["git", "npm", "node", "ls", "cat", "find", "grep", "head", "tail", "wc"];
-    if (allowedBinaries.includes(firstWord)) {
-      commandToRun = prompt;
-    }
+    return runExecFile("npm", ["run", "build"]);
   }
 
-  if (commandToRun) {
-    if (!isSafeCommand(commandToRun)) {
-      return `Error de seguridad: el comando "${commandToRun}" contiene operaciones no permitidas en el entorno local.`;
-    }
-
-    try {
-      const { stdout, stderr } = await execAsync(commandToRun, {
-        cwd: WORKSPACE_DIR,
-        timeout: 25_000,
-        maxBuffer: 1024 * 1024 * 2, // 2MB
-      });
-
-      const out = stdout.trim();
-      const err = stderr.trim();
-      let combined = out;
-      if (err) {
-        combined = combined ? `${combined}\n[stderr]\n${err}` : `[stderr]\n${err}`;
-      }
-
-      if (!combined) {
-        return `Comando "${commandToRun}" ejecutado con éxito (salida vacía, código 0).`;
-      }
-
-      const MAX_LENGTH = 15_000;
-      if (combined.length > MAX_LENGTH) {
-        return (
-          combined.slice(0, MAX_LENGTH) +
-          `\n... [Salida truncada a ${MAX_LENGTH} caracteres]`
-        );
-      }
-      return combined;
-    } catch (err: any) {
-      const msg = err.stdout || err.stderr || err.message;
-      return `Fallo ejecutando "${commandToRun}":\n${String(msg).slice(0, 5000)}`;
-    }
-  }
-
-  // Si no es un comando reconocible, buscar si pide leer un fichero
-  const fileMatch = prompt.match(/(?:lee|mostrar|cat|contenido de|ver)\s+([a-zA-Z0-9_\-./]+)/i);
+  // 3. Lectura segura de ficheros acotada al WORKSPACE_DIR con validación de separador (MUST-2)
+  const fileMatch = prompt.match(/^(?:leer|ver|cat|read|contenido de)\s+([a-zA-Z0-9_\-./]+)$/i);
   if (fileMatch) {
     const relativePath = fileMatch[1];
     const resolved = path.resolve(WORKSPACE_DIR, relativePath);
-    if (!resolved.startsWith(WORKSPACE_DIR)) {
-      return "Error de seguridad: no se permite acceder a ficheros fuera del directorio de trabajo.";
+    // Verificación estricta de límites (evita path traversal y prefijos como .../work-evil)
+    if (resolved !== WORKSPACE_DIR && !resolved.startsWith(WORKSPACE_DIR + path.sep)) {
+      return "Error de seguridad: la ruta solicitada está fuera del espacio de trabajo permitido.";
     }
     try {
+      const stat = await fs.stat(resolved);
+      if (!stat.isFile()) {
+        return `Error: "${relativePath}" no es un fichero regular.`;
+      }
       const content = await fs.readFile(resolved, "utf8");
-      return (
-        `Contenido de ${relativePath} (${content.length} bytes):\n` +
-        content.slice(0, 15_000)
-      );
+      const MAX_LENGTH = 15_000;
+      if (content.length > MAX_LENGTH) {
+        return (
+          `Contenido de ${relativePath} (${content.length} bytes, truncado a ${MAX_LENGTH}):\n` +
+          content.slice(0, MAX_LENGTH)
+        );
+      }
+      return `Contenido de ${relativePath} (${content.length} bytes):\n${content}`;
     } catch (readErr: any) {
       return `No se pudo leer el fichero ${relativePath}: ${readErr.message}`;
     }
   }
 
+  // Rechazo de comandos libres o no contemplados en la allowlist estricta
   return (
-    `Tarea no reconocida o formato no ejecutable: "${prompt}".\n` +
-    `Puedes solicitar: estado de git, ejecutar tests, compilar el proyecto, leer un fichero o especificar "run: <comando>".`
+    `Operación no permitida: por directiva de seguridad local (MUST-2), no se permite la ejecución de comandos arbitrarios en el shell.\n` +
+    `Operaciones autorizadas de solo lectura: git status, git diff, git log, git branch, npm test, npm run build, o leer <fichero_relativo>.`
   );
 }
 

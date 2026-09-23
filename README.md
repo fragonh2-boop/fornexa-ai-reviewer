@@ -122,6 +122,10 @@ no recibe herramientas ni permisos de GitHub, Slack, terminal o despliegue. Las
 revisiones e implementaciones siguen usando sus protocolos estructurados y HEAD
 exacto. Arquitectura, límites y activación: [docs/slack-provider-mentions.md](docs/slack-provider-mentions.md).
 
+De forma opcional, se puede configurar `SLACK_BOT_CHANNEL_TOKEN` para publicar con
+la identidad de un bot dedicado en el canal (ej. FornexaClaude) mediante enrutamiento inteligente
+(`postToChannelSmart` / `postToThreadSmart`), manteniendo retrocompatibilidad total si no se define.
+
 ## Incorporación de contexto de FORNEXA
 
 Además de las revisiones, el bot puede ingerir un documento de incorporación
