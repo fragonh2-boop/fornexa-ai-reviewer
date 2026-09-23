@@ -51,6 +51,7 @@ export const config = {
       enabled: mentionsEnabled,
       botUserId,
     },
+    botChannelToken: process.env.SLACK_BOT_CHANNEL_TOKEN?.trim() || null,
   },
   github: {
     token: required("GITHUB_TOKEN"),

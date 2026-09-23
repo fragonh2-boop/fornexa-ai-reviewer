@@ -157,28 +157,43 @@ test("getCurrentWeather informa si la ciudad no existe", async () => {
 // 2. Seguridad SSRF y Lectura Web
 // ----------------------------------------------------
 
-test("isSafePublicUrl bloquea IPs privadas, loopback, metadatos cloud y esquemas inseguros", () => {
-  assert.equal(isSafePublicUrl("http://localhost"), false);
-  assert.equal(isSafePublicUrl("http://localhost:3000/api"), false);
-  assert.equal(isSafePublicUrl("http://127.0.0.1"), false);
-  assert.equal(isSafePublicUrl("http://127.0.0.1:8080/secret"), false);
-  assert.equal(isSafePublicUrl("http://0.0.0.0"), false);
-  assert.equal(isSafePublicUrl("http://[::1]"), false);
-  assert.equal(isSafePublicUrl("http://app.local"), false);
-  assert.equal(isSafePublicUrl("http://internal.service"), false);
-  assert.equal(isSafePublicUrl("http://169.254.169.254/latest/meta-data/"), false);
-  assert.equal(isSafePublicUrl("http://10.0.0.5/admin"), false);
-  assert.equal(isSafePublicUrl("http://192.168.1.100/"), false);
-  assert.equal(isSafePublicUrl("http://172.16.0.1/"), false);
-  assert.equal(isSafePublicUrl("http://172.31.255.254/"), false);
-  assert.equal(isSafePublicUrl("ftp://fornexa.com/file.txt"), false);
-  assert.equal(isSafePublicUrl("file:///etc/passwd"), false);
-  assert.equal(isSafePublicUrl("not-a-url"), false);
+test("isSafePublicUrl bloquea IPs privadas, loopback, metadatos cloud y esquemas inseguros", async () => {
+  assert.equal(await isSafePublicUrl("http://localhost"), false);
+  assert.equal(await isSafePublicUrl("http://localhost:3000/api"), false);
+  assert.equal(await isSafePublicUrl("http://127.0.0.1"), false);
+  assert.equal(await isSafePublicUrl("http://127.0.0.1:8080/secret"), false);
+  assert.equal(await isSafePublicUrl("http://127.0.0.2/"), false); // 127.0.0.0/8 completo (MUST-1)
+  assert.equal(await isSafePublicUrl("http://0.0.0.0"), false);
+  assert.equal(await isSafePublicUrl("http://[::1]"), false);
+  assert.equal(await isSafePublicUrl("http://[::ffff:127.0.0.1]/"), false); // IPv4-mapped loopback (MUST-1)
+  assert.equal(await isSafePublicUrl("http://[::ffff:169.254.169.254]/"), false); // IPv4-mapped metadata (MUST-1)
+  assert.equal(await isSafePublicUrl("http://[::ffff:10.0.0.5]/"), false); // IPv4-mapped private (MUST-1)
+  assert.equal(await isSafePublicUrl("http://[fd00::1]/"), false); // IPv6 ULA (MUST-1)
+  assert.equal(await isSafePublicUrl("http://[fe80::1]/"), false); // IPv6 Link-local (MUST-1)
+  assert.equal(await isSafePublicUrl("http://app.local"), false);
+  assert.equal(await isSafePublicUrl("http://internal.service"), false);
+  assert.equal(await isSafePublicUrl("http://metadata.google.internal./"), false); // FQDN trailing dot (MUST-1)
+  assert.equal(await isSafePublicUrl("http://169.254.169.254/latest/meta-data/"), false);
+  assert.equal(await isSafePublicUrl("http://10.0.0.5/admin"), false);
+  assert.equal(await isSafePublicUrl("http://100.64.0.1/"), false); // CGNAT RFC6598 (MUST-1)
+  assert.equal(await isSafePublicUrl("http://192.0.0.1/"), false); // IETF protocol assignments (MUST-1)
+  assert.equal(await isSafePublicUrl("http://192.168.1.100/"), false);
+  assert.equal(await isSafePublicUrl("http://172.16.0.1/"), false);
+  assert.equal(await isSafePublicUrl("http://172.31.255.254/"), false);
+  assert.equal(await isSafePublicUrl("ftp://fornexa.com/file.txt"), false);
+  assert.equal(await isSafePublicUrl("file:///etc/passwd"), false);
+  assert.equal(await isSafePublicUrl("not-a-url"), false);
 
-  // URLs públicas válidas
-  assert.equal(isSafePublicUrl("https://fornexa.com"), true);
-  assert.equal(isSafePublicUrl("https://es.wikipedia.org/wiki/Barcelona"), true);
-  assert.equal(isSafePublicUrl("http://example.com/page?q=test"), true);
+  // URLs públicas válidas con IP pública directa (sin depender de red/DNS en entorno de test)
+  assert.equal(await isSafePublicUrl("http://93.184.216.34/"), true);
+  assert.equal(await isSafePublicUrl("https://8.8.8.8/dns-query"), true);
+
+  // Validación con resolución DNS mock (MUST-1: detecta resolución a IP privada/loopback)
+  const mockDnsPublic = async () => [{ address: "93.184.216.34", family: 4 }];
+  const mockDnsLoopback = async () => [{ address: "127.0.0.1", family: 4 }];
+  assert.equal(await isSafePublicUrl("https://es.wikipedia.org/wiki/Barcelona", mockDnsPublic), true);
+  assert.equal(await isSafePublicUrl("http://localtest.me/", mockDnsLoopback), false);
+  assert.equal(await isSafePublicUrl("http://127.0.0.1.nip.io/", mockDnsLoopback), false);
 });
 
 test("fetchWebContent rechaza URLs no seguras o vacías sin invocar fetch", async () => {
@@ -187,6 +202,32 @@ test("fetchWebContent rechaza URLs no seguras o vacías sin invocar fetch", asyn
 
   const res2 = await fetchWebContent({ url: "http://169.254.169.254/secret" });
   assert.match(res2, /URL no es válida o apunta a una dirección interna/i);
+
+  const res3 = await fetchWebContent({ url: "http://127.0.0.2/" });
+  assert.match(res3, /URL no es válida o apunta a una dirección interna/i);
+});
+
+test("fetchWebContent bloquea redirecciones hacia recursos privados o de metadatos (MUST-1)", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("93.184.216.34")) {
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: "http://169.254.169.254/latest/meta-data/",
+          },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    };
+
+    const res = await fetchWebContent({ url: "http://93.184.216.34/public-redirect" });
+    assert.match(res, /URL no es válida o apunta a una dirección interna o restringida/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("fetchWebContent extrae texto limpio de HTML y limpia scripts/estilos", async () => {
@@ -213,7 +254,7 @@ test("fetchWebContent extrae texto limpio de HTML y limpia scripts/estilos", asy
       });
     };
 
-    const text = await fetchWebContent({ url: "https://example.com/noticia" });
+    const text = await fetchWebContent({ url: "http://93.184.216.34/noticia" });
     assert.doesNotMatch(text, /console\.log/);
     assert.doesNotMatch(text, /color: red/);
     assert.match(text, /Noticia Importante/);

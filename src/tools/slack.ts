@@ -110,15 +110,27 @@ export function findPendingHandoff(
   return null;
 }
 
-export async function postToChannel(text: string): Promise<void> {
-  await slack.chat.postMessage({
+import { getBotPublisherClient } from "./slack-bot-publisher.js";
+
+export function getEffectiveSlackClient(): WebClient {
+  return getBotPublisherClient() ?? slack;
+}
+
+export async function postToChannelSmart(text: string): Promise<void> {
+  const client = getEffectiveSlackClient();
+  await client.chat.postMessage({
     channel: config.slack.channelId,
     text,
     unfurl_links: false,
   });
 }
 
-export async function postToThread(text: string | string[], threadTs: string): Promise<void> {
+export async function postToChannel(text: string): Promise<void> {
+  await postToChannelSmart(text);
+}
+
+export async function postToThreadSmart(text: string | string[], threadTs: string): Promise<void> {
+  const client = getEffectiveSlackClient();
   let chunks: string[];
   if (Array.isArray(text)) {
     chunks = text;
@@ -139,11 +151,15 @@ export async function postToThread(text: string | string[], threadTs: string): P
     }
   }
   for (const chunk of chunks) {
-    await slack.chat.postMessage({
+    await client.chat.postMessage({
       channel: config.slack.channelId,
       thread_ts: threadTs,
       text: chunk,
       unfurl_links: false,
     });
   }
+}
+
+export async function postToThread(text: string | string[], threadTs: string): Promise<void> {
+  await postToThreadSmart(text, threadTs);
 }
