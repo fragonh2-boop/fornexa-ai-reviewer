@@ -1,6 +1,7 @@
 import { supportsLegacyOnboarding } from "./providers.js";
 import { createDiagnosticReporter } from "./request-diagnostics.js";
 import { processImplementation } from "./implementation-runner.js";
+import { parseDeployRequest, deployAuthorized, triggerControlledDeploy } from "./controlled-deploy.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
 import {
@@ -62,6 +63,7 @@ const MAX_REMEMBERED_EVENT_IDS = 1000;
 const inFlightReviews = new Map<string, number>();
 const inFlightContextThreads = new Map<string, number>();
 const inFlightMentions = new Map<string, number>();
+const inFlightDeploys = new Set<string>();
 const processedEventIds = new Set<string>();
 const reportMalformed = createDiagnosticReporter(config.slack.agentLabel, postToThread);
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
@@ -75,6 +77,40 @@ function rememberEvent(eventId: string): boolean {
     if (oldest) processedEventIds.delete(oldest);
   }
 
+  return true;
+}
+
+async function processDeploy(message: { text: string; ts: string; user?: string; botId?: string; threadTs?: string }): Promise<boolean> {
+  const request = parseDeployRequest(message, config.slack.agentLabel);
+  if (!request) return false;
+  const prior = await readThread(request.ts);
+  if (prior.some(entry => entry.botId && entry.text.startsWith(`${config.slack.agentLabel} — DEPLOY `))) return true;
+  if (config.model.provider !== 'gemini' || !deployAuthorized(request)) {
+    // Do not disclose which credential or identity gate failed.
+    await postToThread(`${config.slack.agentLabel} — DEPLOY NO AUTORIZADO\nLa capacidad de despliegue no está activa para esta identidad.`, request.ts);
+    return true;
+  }
+  if (inFlightDeploys.has(request.ts)) return true;
+  inFlightDeploys.add(request.ts);
+  try {
+    const result = await triggerControlledDeploy({
+      head: request.head,
+      githubToken: process.env.DEPLOY_GITHUB_TOKEN!,
+      renderApiKey: process.env.DEPLOY_RENDER_API_KEY!,
+    });
+    await postToThread(`${config.slack.agentLabel} — DEPLOY ${result.status === 'started' ? 'INICIADO' : 'YA LIVE'}\n` +
+      `TARGET: fornexa-ai-reviewer-gemini\nHEAD: ${request.head}\nDEPLOY_ID: ${result.deployId}\n` +
+      `${result.status === 'started' ? 'Pendiente de verificar el estado Live y el health check.' : 'Commit ya desplegado según Render.'}`,
+      request.ts);
+  } catch (error) {
+    // No original request, credentials, HTTP bodies or stack traces in Slack.
+    const reason = (error as Error).message;
+    const safe = /^(main HEAD differs|main changed|Required validate check|Check list may|Render service identity|A deployment is already in progress)/.test(reason)
+      ? reason : 'La comprobación o la API falló; consultar los registros del servicio.';
+    await postToThread(`${config.slack.agentLabel} — DEPLOY BLOQUEADO\n${safe}`, request.ts);
+  } finally {
+    inFlightDeploys.delete(request.ts);
+  }
   return true;
 }
 
@@ -388,6 +424,7 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
 async function tick(): Promise<void> {
   const messages = await readRecentHistory();
   for (const message of messages) {
+    if (await processDeploy(message)) break;
     if (await reportMalformed(message)) continue;
     if (await processImplementation(message)) break;
   }
@@ -462,6 +499,10 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
 
   if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
   const humanMessage = extractHumanMessage(envelope, config.slack.channelId);
+  if (humanMessage && /^MODE:\s*DEPLOY\s*$/m.test(humanMessage.text)) {
+    setImmediate(() => { processDeploy(humanMessage).catch(() => console.error('Controlled deploy handling failed')); });
+    return;
+  }
   if (humanMessage && await reportMalformed(humanMessage)) return;
   if (humanMessage && /^MODE:\s*IMPLEMENT\s*$/m.test(humanMessage.text)) {
     setImmediate(() => { processImplementation(humanMessage).catch(() => console.error('Implementation failed; checkpoint retained')); });
