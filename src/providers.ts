@@ -12,7 +12,9 @@ export const endpoints: Record<ProviderName, string> = {
 };
 /** Shared function-calling transport; no repository permissions live in adapters. */
 export function createAdapter(provider: ProviderName, apiKey: string, model: string, timeout: number, fetch?: ClientOptions["fetch"]): ModelAdapter {
-  const client = new OpenAI({ apiKey, baseURL: endpoints[provider], timeout, maxRetries: 0, fetch });
+  // The shared SDK retries only transient connection errors, 408/409/429 and 5xx.
+  // Keep the budget small so a provider outage cannot occupy a worker indefinitely.
+  const client = new OpenAI({ apiKey, baseURL: endpoints[provider], timeout, maxRetries: 2, fetch });
   return {
     async complete(messages, tools) {
       const result = await client.chat.completions.create({ model, messages,

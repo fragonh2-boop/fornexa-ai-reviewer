@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import "dotenv/config";
+import { isSafeSidecarReadPath } from "../src/local-sidecar-policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -114,6 +115,9 @@ async function executeTask(taskPrompt: string): Promise<string> {
   const fileMatch = prompt.match(/^(?:leer|ver|cat|read|contenido de)\s+([a-zA-Z0-9_\-./]+)$/i);
   if (fileMatch) {
     const relativePath = fileMatch[1];
+    if (!isSafeSidecarReadPath(relativePath)) {
+      return "Error de seguridad: no se permite leer rutas de configuración sensible, credenciales o claves.";
+    }
     const resolved = path.resolve(WORKSPACE_DIR, relativePath);
     // Verificación estricta de límites (evita path traversal y prefijos como .../work-evil)
     if (resolved !== WORKSPACE_DIR && !resolved.startsWith(WORKSPACE_DIR + path.sep)) {

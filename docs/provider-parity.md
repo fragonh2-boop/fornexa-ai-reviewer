@@ -10,6 +10,8 @@ GPT/Claude/Gemini have the same read/review/propose/branch/commit/draft-PR capab
 
 Conversational Slack mentions use the same provider adapters and a separate capability set with no tools. Each provider needs its own Slack app identity because Slack mentions resolve to installed users/apps and a router cannot impersonate several identities. The first exact `@bot` mention opens a thread; subsequent human replies continue there. Exact Slack message timestamps provide terminal correlation and restart-safe dedupe. See [Provider mentions in Slack](slack-provider-mentions.md).
 
+Transient provider failures (connection, 408/409/429 and 5xx) receive at most two shared transport retries. An explicit `usa query_local_antigravity para …` Slack request from a user in `SIDECAR_SLACK_USER_IDS` bypasses provider interpretation and enters the same authenticated local sidecar queue, so a provider quota incident does not block the local allowlist. An empty user allowlist fails closed. The sidecar accepts only fixed git status/diff/log/branch, tests/build and bounded file reads; `.env`, Git internals, credential directories/files, private keys and traversal are rejected.
+
 Official transport references: https://ai.google.dev/gemini-api/docs/openai and https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk . Only the common text/function-calling subset is used. Model identifiers must be configured explicitly for new providers. Contract tests use fake HTTP responses; live provider compatibility and credentials still need a controlled staging smoke before activation. Legacy DeepSeek base URL overrides are removed: credentials only go to the fixed provider endpoint. The legacy phase-0 onboarding marker remains DeepSeek-specific and is gated to DeepSeek at runtime; it is not part of the implementation/review parity contract.
 
 ## GitHub and Slack authorization
@@ -63,4 +65,4 @@ Follow-up fixes:
 - Legacy phase-zero onboarding is gated to DeepSeek in polling, events and model entry point so other providers cannot compete for its hardcoded markers.
 - Write-token permissions and the shared-identity warning now sit beside the variables in .env.example.
 
-Follow-up validation: 79 local tests and TypeScript build pass. The current HEAD requires a scoped, independent exact-HEAD review and is not automatically approved. No merge or deployment.
+Follow-up validation: 83 local tests and TypeScript build pass. The current HEAD requires a scoped, independent exact-HEAD review and is not automatically approved. No merge or deployment.

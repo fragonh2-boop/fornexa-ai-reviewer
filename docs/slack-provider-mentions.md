@@ -53,6 +53,7 @@ SLACK_BOT_TOKEN=<dedicated xoxb token>
 SLACK_SIGNING_SECRET=<dedicated signing secret>
 SLACK_BOT_USER_ID=<the bot's U… identity>
 SLACK_MENTIONS_ENABLED=true
+SIDECAR_SLACK_USER_IDS=<comma-separated U… IDs allowed to invoke the local bridge>
 ```
 
 Configure only the selected provider's API key and model. Keep the GitHub token read-only. Keep `IMPLEMENT_ENABLED=false` unless the existing independent authorization and durable-checkpoint gates have been satisfied.
@@ -65,6 +66,7 @@ Configure only the selected provider's API key and model. Keep the GitHub token 
 - A prompt is limited to 12 KiB; retained conversation is limited to 20 messages and 64 KiB.
 - A thread is limited to 8 human turns. The ninth receives a terminal failure and cannot trigger a model call.
 - Text matching known secret formats is rejected before a model call.
+- The explicit local-bridge phrase requires a separate Slack-user allowlist; an empty list denies every request.
 - Model calls keep the existing timeout and provider response validation.
 - A failed turn receives a terminal failure marker and is not retried forever. A human can explicitly mention the bot again.
 - Polling examines at most 50 recent mention threads per cycle as recovery for missed events.

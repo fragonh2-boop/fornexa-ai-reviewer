@@ -80,6 +80,7 @@ import {
   parseSlackDeploymentInteraction,
   type DeploymentApproval,
 } from "./deployment-approval.js";
+import { isAuthorizedSidecarUser, parseDirectSidecarPrompt } from "./local-sidecar-policy.js";
 
 const MAX_REMEMBERED_EVENT_IDS = 1000;
 const inFlightReviews = new Map<string, number>();
@@ -498,13 +499,18 @@ async function processSlackMention(
     ) {
       return false;
     }
+    const directSidecarTask = parseDirectSidecarPrompt(turn.prompt);
     const conversation = buildMentionConversation({
       messages: latest,
       turn,
       botUserId: config.slack.mentions.botUserId,
       agentLabel: config.slack.agentLabel,
     });
-    const response = await answerSlackConversation(conversation);
+    const response = directSidecarTask
+      ? isAuthorizedSidecarUser(turn.user, config.sidecarSlackUserIds)
+        ? await sidecarManager.dispatchTask(directSidecarTask)
+        : "Esta cuenta de Slack no está autorizada para usar el puente local."
+      : await answerSlackConversation(conversation);
     if (!ownsLock(inFlightMentions, key, lock.startedAt)) return false;
     await postToThread(
       formatMentionResponseParts(config.slack.agentLabel, turn.ts, response),

@@ -61,4 +61,5 @@ export const config = {
   pollIntervalMinutes: positiveNumber("POLL_INTERVAL_MINUTES", 5),
   staleLockMinutes: positiveNumber("STALE_LOCK_MINUTES", 15),
   sidecarToken: process.env.SIDECAR_AUTH_TOKEN?.trim() || null,
+  sidecarSlackUserIds: process.env.SIDECAR_SLACK_USER_IDS?.trim() || "",
 };

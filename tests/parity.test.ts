@@ -39,3 +39,19 @@ for (const provider of Object.keys(endpoints) as ProviderName[]) {
 test('round exhaustion cannot become a successful implementation', async () => {
   await assert.rejects(proposeImplementation({ complete: async () => ({role:'assistant', content:null, refusal:null, tool_calls:[{id:'a',type:'function',function:{name:'get_full_file',arguments:'{"path":"docs/a.md"}'}}]}) }, request, async () => 'data'), /budget exhausted/);
 });
+
+test('provider transport retries a transient 429 with the same bounded request', async () => {
+  let calls = 0;
+  const adapter = createAdapter('gemini', 'test', 'model', 5_000, async () => {
+    calls += 1;
+    if (calls === 1) return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+      status: 429,
+      headers: { 'content-type': 'application/json', 'retry-after': '0' },
+    });
+    return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }] }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  assert.equal((await adapter.complete([], [])).content, 'ok');
+  assert.equal(calls, 2);
+});
