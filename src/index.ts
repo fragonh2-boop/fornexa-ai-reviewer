@@ -2,6 +2,7 @@ import { supportsLegacyOnboarding } from "./providers.js";
 import { createDiagnosticReporter } from "./request-diagnostics.js";
 import { processImplementation } from "./implementation-runner.js";
 import { parseDeployRequest, deployAuthorized, triggerControlledDeploy } from "./controlled-deploy.js";
+import { parseVercelDeploy, vercelDeployAuthorized, triggerVercelDeploy } from "./controlled-vercel.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
 import {
@@ -108,6 +109,38 @@ async function processDeploy(message: { text: string; ts: string; user?: string;
     const safe = /^(main HEAD differs|main changed|Required validate check|Check list may|Render service identity|A deployment is already in progress)/.test(reason)
       ? reason : 'La comprobación o la API falló; consultar los registros del servicio.';
     await postToThread(`${config.slack.agentLabel} — DEPLOY BLOQUEADO\n${safe}`, request.ts);
+  } finally {
+    inFlightDeploys.delete(request.ts);
+  }
+  return true;
+}
+
+async function processVercelDeploy(message: { text: string; ts: string; user?: string; botId?: string; threadTs?: string }): Promise<boolean> {
+  const request = parseVercelDeploy(message, config.slack.agentLabel);
+  if (!request) return false;
+  const prior = await readThread(request.ts);
+  if (prior.some(entry => entry.botId && entry.text.startsWith(`${config.slack.agentLabel} — VERCEL `))) return true;
+  if (config.model.provider !== 'gemini' || !vercelDeployAuthorized(request)) {
+    await postToThread(`${config.slack.agentLabel} — VERCEL NO AUTORIZADO\nLa capacidad no está activa para esta identidad.`, request.ts);
+    return true;
+  }
+  if (inFlightDeploys.has(request.ts)) return true;
+  inFlightDeploys.add(request.ts);
+  try {
+    const result = await triggerVercelDeploy({
+      head: request.head,
+      githubToken: process.env.VERCEL_DEPLOY_GITHUB_TOKEN!,
+      vercelToken: process.env.VERCEL_DEPLOY_API_TOKEN!,
+    });
+    await postToThread(`${config.slack.agentLabel} — VERCEL ${result.status === 'started' ? 'DEPLOY INICIADO' : 'YA READY'}\n` +
+      `TARGET: fornexa\nHEAD: ${request.head}\nDEPLOY_ID: ${result.deploymentId}\n` +
+      `${result.status === 'started' ? 'Pendiente de comprobar READY, alias de producción y health.' : 'El último despliegue de producción ya corresponde al HEAD solicitado.'}`,
+      request.ts);
+  } catch (error) {
+    const reason = (error as Error).message;
+    const safe = /^(Fornexa main HEAD differs|Fornexa main changed|Fornexa CI validate|Check list may|Vercel project identity|A Vercel deployment is already in progress)/.test(reason)
+      ? reason : 'La comprobación o la API falló; consultar los registros del servicio.';
+    await postToThread(`${config.slack.agentLabel} — VERCEL DEPLOY BLOQUEADO\n${safe}`, request.ts);
   } finally {
     inFlightDeploys.delete(request.ts);
   }
@@ -424,6 +457,7 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
 async function tick(): Promise<void> {
   const messages = await readRecentHistory();
   for (const message of messages) {
+    if (await processVercelDeploy(message)) break;
     if (await processDeploy(message)) break;
     if (await reportMalformed(message)) continue;
     if (await processImplementation(message)) break;
@@ -499,6 +533,10 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
 
   if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
   const humanMessage = extractHumanMessage(envelope, config.slack.channelId);
+  if (humanMessage && /^MODE:\s*DEPLOY_VERCEL\s*$/m.test(humanMessage.text)) {
+    setImmediate(() => { processVercelDeploy(humanMessage).catch(() => console.error('Vercel deploy handling failed')); });
+    return;
+  }
   if (humanMessage && /^MODE:\s*DEPLOY\s*$/m.test(humanMessage.text)) {
     setImmediate(() => { processDeploy(humanMessage).catch(() => console.error('Controlled deploy handling failed')); });
     return;
