@@ -151,9 +151,10 @@ Events no haya podido entregar durante un arranque en frío.
 
 - El token de GitHub no tiene permiso de merge ni de escritura en `main`:
   aunque el modelo "quisiera" fusionar, no puede.
-- El código de este repo no define ninguna función de merge, deploy o
-  migración como herramienta invocable. Solo existen: leer diff/checks/
-  ficheros, y comentar en la PR / publicar en Slack.
+- El modelo no recibe funciones de merge, despliegue o migración. Los únicos
+  despliegues admitidos son rutas de control fijas para Render/Vercel: SHA
+  completo, CI verde, destino allowlisted y aprobación humana interactiva
+  firmada por Slack. Permanecen desactivadas por defecto.
 - Nunca revisa código que él mismo haya escrito (de momento no escribe
   código; si en el futuro se activa la función de "ejecución delegada",
   esa PR la deberá revisar Claude, nunca este mismo agente).
@@ -186,3 +187,6 @@ con los valores por defecto de Fornexa.
 
 See [architecture, least privilege, protocol and recovery](docs/provider-parity.md).
 The implementation lane is disabled by default. DeepSeek remains read-only.
+Controlled deploys require signed interactive Slack approval and independent
+exact-HEAD review; see [Render](docs/gemini-controlled-deploy.md) and
+[Vercel](docs/gemini-vercel-deploy.md).

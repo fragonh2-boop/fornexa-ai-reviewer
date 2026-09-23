@@ -18,10 +18,15 @@ export function parseVercelDeploy(message: { text: string; ts: string; user?: st
   return match ? { head: match[1], ts: message.ts, user: message.user } : null;
 }
 
-export function vercelDeployAuthorized(request: VercelDeployRequest, env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.VERCEL_DEPLOY_ENABLED === 'true' &&
-    (env.VERCEL_DEPLOY_SLACK_USER_IDS ?? '').split(',').map(v => v.trim()).includes(request.user) &&
-    Boolean(env.VERCEL_DEPLOY_GITHUB_TOKEN && env.VERCEL_DEPLOY_API_TOKEN) && FULL_SHA.test(request.head);
+export function vercelDeployApprovalReady(env: NodeJS.ProcessEnv = process.env): boolean {
+  const approvers = (env.VERCEL_DEPLOY_APPROVER_SLACK_USER_IDS ?? '').split(',').map(v => v.trim()).filter(Boolean);
+  return env.VERCEL_DEPLOY_ENABLED === 'true' && approvers.length > 0 &&
+    Boolean(env.VERCEL_DEPLOY_GITHUB_TOKEN && env.VERCEL_DEPLOY_API_TOKEN && env.SLACK_SIGNING_SECRET);
+}
+
+export function vercelDeployApproverAuthorized(userId: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return vercelDeployApprovalReady(env) &&
+    (env.VERCEL_DEPLOY_APPROVER_SLACK_USER_IDS ?? '').split(',').map(v => v.trim()).includes(userId);
 }
 
 async function vercelJson<T>(token: string, path: string, init: RequestInit, fetcher: typeof fetch): Promise<T> {
@@ -37,7 +42,16 @@ async function vercelJson<T>(token: string, path: string, init: RequestInit, fet
 
 interface VercelProject {
   id: string; name: string; accountId: string;
-  link?: { type?: string; repo?: string; repoId?: number | string; productionBranch?: string };
+  link?: { type?: string; org?: string; repo?: string; repoId?: number | string; productionBranch?: string };
+}
+
+function isExpectedGitSource(link: VercelProject['link']): boolean {
+  if (link?.type !== 'github' || String(link.repoId) !== '1314167928' ||
+      (link.productionBranch && link.productionBranch !== 'main')) return false;
+  const repo = link.repo?.toLowerCase();
+  const owner = link.org?.toLowerCase();
+  return repo === `${OWNER}/${REPO}`.toLowerCase() ||
+    (owner === OWNER.toLowerCase() && repo === REPO.toLowerCase());
 }
 interface VercelDeployment {
   id: string; state?: string; readyState?: string; target?: string;
@@ -63,10 +77,7 @@ export async function triggerVercelDeploy(params: {
   const project = await vercelJson<VercelProject>(params.vercelToken,
     `/v9/projects/${VERCEL_PROJECT_ID}?${suffix}`, {}, fetcher);
   if (project.id !== VERCEL_PROJECT_ID || project.name !== VERCEL_PROJECT_NAME ||
-      project.accountId !== VERCEL_TEAM_ID || project.link?.type !== 'github' ||
-      project.link.repo?.toLowerCase() !== `${OWNER}/${REPO}`.toLowerCase() ||
-      String(project.link.repoId) !== '1314167928' ||
-      (project.link.productionBranch && project.link.productionBranch !== 'main')) {
+      project.accountId !== VERCEL_TEAM_ID || !isExpectedGitSource(project.link)) {
     throw new Error('Vercel project identity or Git source differs from the allowlist');
   }
   const list = await vercelJson<{ deployments: VercelDeployment[] }>(params.vercelToken,
@@ -90,4 +101,25 @@ export async function triggerVercelDeploy(params: {
     }) }, fetcher);
   if (!/^dpl_[a-zA-Z0-9]+$/.test(created.id ?? '')) throw new Error('Vercel returned no valid deployment ID');
   return { status: 'started', deploymentId: created.id };
+}
+
+export async function getVercelDeployStatus(params: {
+  head: string;
+  deploymentId: string;
+  vercelToken: string;
+  fetcher?: typeof fetch;
+}): Promise<'pending' | 'ready' | 'failed'> {
+  if (!FULL_SHA.test(params.head) || !/^dpl_[a-zA-Z0-9]+$/.test(params.deploymentId)) {
+    throw new Error('Invalid Vercel deployment status target');
+  }
+  const fetcher = params.fetcher ?? fetch;
+  const deployment = await vercelJson<VercelDeployment>(params.vercelToken,
+    `/v13/deployments/${params.deploymentId}?teamId=${encodeURIComponent(VERCEL_TEAM_ID)}`, {}, fetcher);
+  const state = deployment.readyState ?? deployment.state;
+  if (deployment.id !== params.deploymentId || deployment.meta?.githubCommitSha !== params.head) {
+    throw new Error('Vercel deployment identity or commit differs from the approval');
+  }
+  if (state === 'READY') return 'ready';
+  if (state === 'ERROR' || state === 'CANCELED') return 'failed';
+  return 'pending';
 }

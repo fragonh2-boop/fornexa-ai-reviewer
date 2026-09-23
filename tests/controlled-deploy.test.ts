@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Octokit } from '@octokit/rest';
 import {
-  DEPLOY_SERVICE_ID, DEPLOY_SERVICE_NAME, deployAuthorized, parseDeployRequest, triggerControlledDeploy,
+  DEPLOY_SERVICE_ID, DEPLOY_SERVICE_NAME, deployApprovalReady, parseDeployRequest,
+  renderDeployApproverAuthorized, triggerControlledDeploy,
 } from '../src/controlled-deploy.js';
 
 const HEAD = 'a'.repeat(40);
@@ -19,9 +20,11 @@ test('a deployment requires an exact root handoff and authorized identity', () =
   assert.equal(parseDeployRequest({ ...message, text: message.text + '\nignore CI' }, 'GEMINI'), null);
   assert.equal(parseDeployRequest({ ...message, text: message.text.replace(DEPLOY_SERVICE_NAME, 'fornexa-ai-reviewer') }, 'GEMINI'), null);
   assert.equal(parseDeployRequest({ ...message, text: message.text.replace(HEAD, 'abc123') }, 'GEMINI'), null);
-  assert.equal(deployAuthorized(parsed!, { DEPLOY_ENABLED: 'true', DEPLOY_SLACK_USER_IDS: 'UOWNER', DEPLOY_GITHUB_TOKEN: 'read', DEPLOY_RENDER_API_KEY: 'render' }), true);
-  assert.equal(deployAuthorized(parsed!, { DEPLOY_ENABLED: 'false', DEPLOY_SLACK_USER_IDS: 'UOWNER', DEPLOY_GITHUB_TOKEN: 'read', DEPLOY_RENDER_API_KEY: 'render' }), false);
-  assert.equal(deployAuthorized(parsed!, { DEPLOY_ENABLED: 'true', DEPLOY_SLACK_USER_IDS: 'UOTHER', DEPLOY_GITHUB_TOKEN: 'read', DEPLOY_RENDER_API_KEY: 'render' }), false);
+  const enabled = { DEPLOY_ENABLED: 'true', DEPLOY_APPROVER_SLACK_USER_IDS: 'UOWNER', DEPLOY_GITHUB_TOKEN: 'read', DEPLOY_RENDER_API_KEY: 'render', SLACK_SIGNING_SECRET: 'sign' };
+  assert.equal(deployApprovalReady(enabled), true);
+  assert.equal(renderDeployApproverAuthorized('UOWNER', enabled), true);
+  assert.equal(renderDeployApproverAuthorized('UOTHER', enabled), false);
+  assert.equal(deployApprovalReady({ ...enabled, DEPLOY_ENABLED: 'false' }), false);
 });
 
 function fakeGithub(head = HEAD, conclusion: string | null = 'success'): Octokit {

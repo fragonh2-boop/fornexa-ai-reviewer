@@ -23,11 +23,15 @@ export function parseDeployRequest(message: {
   return match ? { head: match[1], ts: message.ts, user: message.user } : null;
 }
 
-export function deployAuthorized(request: DeployRequest, env: NodeJS.ProcessEnv = process.env): boolean {
-  const users = (env.DEPLOY_SLACK_USER_IDS ?? '').split(',').map(value => value.trim());
-  return env.DEPLOY_ENABLED === 'true' && users.includes(request.user) &&
-    Boolean(env.DEPLOY_GITHUB_TOKEN && env.DEPLOY_RENDER_API_KEY) &&
-    SHA.test(request.head);
+export function deployApprovalReady(env: NodeJS.ProcessEnv = process.env): boolean {
+  const approvers = (env.DEPLOY_APPROVER_SLACK_USER_IDS ?? '').split(',').map(value => value.trim()).filter(Boolean);
+  return env.DEPLOY_ENABLED === 'true' && approvers.length > 0 &&
+    Boolean(env.DEPLOY_GITHUB_TOKEN && env.DEPLOY_RENDER_API_KEY && env.SLACK_SIGNING_SECRET);
+}
+
+export function renderDeployApproverAuthorized(userId: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return deployApprovalReady(env) &&
+    (env.DEPLOY_APPROVER_SLACK_USER_IDS ?? '').split(',').map(value => value.trim()).includes(userId);
 }
 
 type RenderDeploy = { id: string; status: string; commit?: { id?: string } };
@@ -42,6 +46,24 @@ async function renderJson<T>(apiKey: string, path: string, init: RequestInit = {
   // Render errors may contain URLs or secret material; never include response bodies in logs or Slack.
   if (!response.ok) throw new Error(`Render API returned HTTP ${response.status}`);
   return response.json() as Promise<T>;
+}
+
+export async function getControlledDeployStatus(params: {
+  head: string;
+  deployId: string;
+  renderApiKey: string;
+  fetcher?: typeof fetch;
+}): Promise<'pending' | 'live' | 'failed'> {
+  if (!SHA.test(params.head) || !/^dep-[a-z0-9]+$/.test(params.deployId)) {
+    throw new Error('Invalid controlled deploy status target');
+  }
+  const recent = await renderJson<Array<{ deploy: RenderDeploy }>>(params.renderApiKey,
+    `/services/${DEPLOY_SERVICE_ID}/deploys?limit=20`, {}, params.fetcher ?? fetch);
+  const found = recent.find(entry => entry?.deploy?.id === params.deployId)?.deploy;
+  if (!found || found.commit?.id !== params.head) throw new Error('Render deployment identity or commit differs from the approval');
+  if (found.status === 'live') return 'live';
+  if (['build_failed', 'update_failed', 'pre_deploy_failed', 'canceled', 'deactivated'].includes(found.status)) return 'failed';
+  return 'pending';
 }
 
 export async function triggerControlledDeploy(params: {

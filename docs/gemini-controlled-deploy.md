@@ -4,17 +4,17 @@ The Gemini Slack service can accept an exact, deterministic deployment request. 
 
 ## Activation
 
-1. Remove agent access to Fran's Slack **user token**. Separate bot identities are necessary so a message with Fran's Slack user ID is attributable to Fran. Audit the workspace before enabling writes; a textual footer is not proof of identity.
+1. Enable Slack **Interactivity & Shortcuts** with Request URL `https://fornexa-ai-reviewer-gemini.onrender.com/slack/interactions`. The endpoint verifies Slack's signature and five-minute replay window before accepting a button click.
 2. Create a dedicated GitHub credential for this repository with Contents read, Checks read and Metadata read. Set `DEPLOY_GITHUB_TOKEN` only on the Gemini Render service. Do not reuse the Fornexa product token or a broad personal token.
 3. Set `DEPLOY_RENDER_API_KEY` only on the Gemini Render service. Render API keys may grant account-wide access; the application hardcodes and rechecks the service name, ID, branch and source repository before each deploy. Prefer a narrower Render credential if available. Do not paste the key in chat or Slack.
-4. Set `DEPLOY_SLACK_USER_IDS` to verified human Slack IDs and `DEPLOY_ENABLED=true` only after steps 1–3, CI and an independent review of this change. This deployment to the same service will restart the running process.
+4. Set `DEPLOY_APPROVER_SLACK_USER_IDS` to the human Slack IDs allowed to press the approval button and `DEPLOY_ENABLED=true` only after steps 1–3, CI and an independent exact-HEAD review. A message sent with Fran's user token cannot emulate the Slack-signed interactive request. This deployment to the same service will restart the running process.
 5. Check the service's `autoDeployTrigger`: it currently says `commit`. If automatic deployment must wait for CI, set it to `checksPass` or `off` in Render. The explicit API deploy below does not disable autodeploys.
 
 All four fields are server configuration. The feature remains disabled by default and missing credentials fail closed.
 
 ## Request and outcome
 
-Post as a new root message in `#fornexa`, from an authorized human account:
+Post as a new root message in `#fornexa`:
 
 ```text
 GEMINI — ACCIÓN REQUERIDA
@@ -23,6 +23,6 @@ TARGET: fornexa-ai-reviewer-gemini
 HEAD: <full lowercase 40-character SHA of main>
 ```
 
-The handler verifies the signed Slack event (or rechecks the message via the existing authenticated Slack polling), the Slack user allowlist, exact syntax, exact `main` HEAD, a single successful `validate` check for that commit, the Render service identity and lack of an in-progress deploy. It invokes Render's Deploy API with `commitId`, then posts the deploy ID in the request thread. A duplicate request for an already live commit does not trigger another deploy. Recheck the returned deployment's `Live` status and service health in Render; a `DEPLOY INICIADO` response is **not** completion. The bot may restart while deploying itself.
+The root message only creates a two-hour approval request. The bot posts a Slack button bound by HMAC to the exact mode, SHA and thread. Slack signs the button interaction; the service checks that signature, the approver allowlist and the bound payload before it revalidates exact `main`, the single successful `validate` check, Render service identity and lack of an in-progress deploy. It then invokes Render's Deploy API with `commitId` and posts the deployment ID. `DEPLOY INICIADO` is not completion: the worker checks the terminal state, and the polling fallback resumes that verification after the self-deploy restarts the service. Only `DEPLOY COMPLETADO` for the same SHA and deployment ID declares success.
 
 Review/implementation commands remain distinct. The implementation lane also needs its own verified identity, write credential, repository ruleset and durable checkpoint. This change does not activate it. It does not confer equality with native Codex or Claude desktop tools.

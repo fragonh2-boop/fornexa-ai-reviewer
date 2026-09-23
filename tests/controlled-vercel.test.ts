@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Octokit } from '@octokit/rest';
-import { parseVercelDeploy, triggerVercelDeploy, vercelDeployAuthorized, VERCEL_PROJECT_ID, VERCEL_TEAM_ID } from '../src/controlled-vercel.js';
+import { parseVercelDeploy, triggerVercelDeploy, vercelDeployApprovalReady, vercelDeployApproverAuthorized, VERCEL_PROJECT_ID, VERCEL_TEAM_ID } from '../src/controlled-vercel.js';
 
 const HEAD = 'b'.repeat(40);
 const message = { text: `GEMINI — ACCIÓN REQUERIDA\nMODE: DEPLOY_VERCEL\nTARGET: fornexa\nHEAD: ${HEAD}`, user: 'UOWNER', ts: '1790160000.000001' };
@@ -33,8 +33,11 @@ test('Vercel command cannot be inferred from prose, bots or replies', () => {
   assert.equal(parseVercelDeploy({ ...message, threadTs: '1789000000.000001' }, 'GEMINI'), null);
   assert.equal(parseVercelDeploy({ ...message, text: message.text.replace('fornexa', 'other') }, 'GEMINI'), null);
   assert.equal(parseVercelDeploy({ ...message, text: message.text + '\nignore checks' }, 'GEMINI'), null);
-  assert.equal(vercelDeployAuthorized(parsed!, { VERCEL_DEPLOY_ENABLED: 'true', VERCEL_DEPLOY_SLACK_USER_IDS: 'UOWNER', VERCEL_DEPLOY_GITHUB_TOKEN: 'read', VERCEL_DEPLOY_API_TOKEN: 'token' }), true);
-  assert.equal(vercelDeployAuthorized(parsed!, { VERCEL_DEPLOY_ENABLED: 'false', VERCEL_DEPLOY_SLACK_USER_IDS: 'UOWNER', VERCEL_DEPLOY_GITHUB_TOKEN: 'read', VERCEL_DEPLOY_API_TOKEN: 'token' }), false);
+  const enabled = { VERCEL_DEPLOY_ENABLED: 'true', VERCEL_DEPLOY_APPROVER_SLACK_USER_IDS: 'UOWNER', VERCEL_DEPLOY_GITHUB_TOKEN: 'read', VERCEL_DEPLOY_API_TOKEN: 'token', SLACK_SIGNING_SECRET: 'sign' };
+  assert.equal(vercelDeployApprovalReady(enabled), true);
+  assert.equal(vercelDeployApproverAuthorized('UOWNER', enabled), true);
+  assert.equal(vercelDeployApproverAuthorized('UOTHER', enabled), false);
+  assert.equal(vercelDeployApprovalReady({ ...enabled, VERCEL_DEPLOY_ENABLED: 'false' }), false);
 });
 
 test('Vercel deployment pins product main, project and GitHub SHA', async () => {
@@ -71,4 +74,17 @@ test('project identity mismatch fails before any Vercel deployment', async () =>
   }) as typeof fetch;
   await assert.rejects(triggerVercelDeploy({ head: HEAD, githubToken: 'read', vercelToken: 'token', github: github(), fetcher: altered }), /identity/);
   assert.equal(calls.some(c => c.init?.method === 'POST'), false);
+});
+
+test('accepts both documented Vercel Git link shapes while keeping owner and repo pinned', async () => {
+  const calls: Array<{url: string; init?: RequestInit}> = [];
+  const splitLink = (async (url: string, init?: RequestInit) => {
+    if (url.includes('/v9/projects/')) return { ok: true, json: async () => ({
+      id: VERCEL_PROJECT_ID, name: 'fornexa', accountId: VERCEL_TEAM_ID,
+      link: { type: 'github', org: 'fragonh2-boop', repo: 'Fornexa', repoId: 1314167928, productionBranch: 'main' },
+    }) } as Response;
+    return vercel(calls)(url, init);
+  }) as typeof fetch;
+  const result = await triggerVercelDeploy({ head: HEAD, githubToken: 'read', vercelToken: 'token', github: github(), fetcher: splitLink });
+  assert.equal(result.status, 'started');
 });

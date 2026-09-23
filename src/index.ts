@@ -1,8 +1,20 @@
 import { supportsLegacyOnboarding } from "./providers.js";
 import { createDiagnosticReporter } from "./request-diagnostics.js";
 import { processImplementation } from "./implementation-runner.js";
-import { parseDeployRequest, deployAuthorized, triggerControlledDeploy } from "./controlled-deploy.js";
-import { parseVercelDeploy, vercelDeployAuthorized, triggerVercelDeploy } from "./controlled-vercel.js";
+import {
+  deployApprovalReady,
+  getControlledDeployStatus,
+  parseDeployRequest,
+  renderDeployApproverAuthorized,
+  triggerControlledDeploy,
+} from "./controlled-deploy.js";
+import {
+  getVercelDeployStatus,
+  parseVercelDeploy,
+  triggerVercelDeploy,
+  vercelDeployApprovalReady,
+  vercelDeployApproverAuthorized,
+} from "./controlled-vercel.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
 import {
@@ -10,6 +22,7 @@ import {
   findPendingHandoff,
   postToChannel,
   postToThread,
+  postToThreadWithBlocks,
   readThread,
   type SlackMessage,
 } from "./tools/slack.js";
@@ -59,6 +72,14 @@ import {
   selectPendingMentionTurn,
   type SlackMentionTurn,
 } from "./slack-mentions.js";
+import {
+  APPROVAL_ACTION_IDS,
+  createDeploymentApprovalToken,
+  deploymentApprovalBlocks,
+  parseDeploymentApprovalToken,
+  parseSlackDeploymentInteraction,
+  type DeploymentApproval,
+} from "./deployment-approval.js";
 
 const MAX_REMEMBERED_EVENT_IDS = 1000;
 const inFlightReviews = new Map<string, number>();
@@ -68,6 +89,7 @@ const inFlightDeploys = new Set<string>();
 const processedEventIds = new Set<string>();
 const reportMalformed = createDiagnosticReporter(config.slack.agentLabel, postToThread);
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
+const APPROVAL_TTL_MS = 2 * 60 * 60 * 1000;
 
 function rememberEvent(eventId: string): boolean {
   if (processedEventIds.has(eventId)) return false;
@@ -85,33 +107,28 @@ async function processDeploy(message: { text: string; ts: string; user?: string;
   const request = parseDeployRequest(message, config.slack.agentLabel);
   if (!request) return false;
   const prior = await readThread(request.ts);
-  if (prior.some(entry => entry.botId && entry.text.startsWith(`${config.slack.agentLabel} — DEPLOY `))) return true;
-  if (config.model.provider !== 'gemini' || !deployAuthorized(request)) {
+  if (prior.some(entry => entry.botId && / — DEPLOY (?:COMPLETADO|FALLIDO|YA LIVE|BLOQUEADO|NO AUTORIZADO)/.test(entry.text))) return true;
+
+  const started = prior.find(entry => entry.botId && entry.text.startsWith(`${config.slack.agentLabel} — DEPLOY INICIADO\n`) &&
+    entry.text.includes(`HEAD: ${request.head}\n`));
+  const startedId = started ? /^DEPLOY_ID: (dep-[a-z0-9]+)$/m.exec(started.text)?.[1] : undefined;
+  if (startedId && process.env.DEPLOY_RENDER_API_KEY) {
+    await reportRenderDeployStatus(request.ts, request.head, startedId);
+    return true;
+  }
+  if (prior.some(entry => entry.botId && entry.text.startsWith(`${config.slack.agentLabel} — DEPLOY PENDIENTE DE APROBACIÓN\n`))) return true;
+
+  if (config.model.provider !== 'gemini' || !deployApprovalReady()) {
     // Do not disclose which credential or identity gate failed.
     await postToThread(`${config.slack.agentLabel} — DEPLOY NO AUTORIZADO\nLa capacidad de despliegue no está activa para esta identidad.`, request.ts);
     return true;
   }
-  if (inFlightDeploys.has(request.ts)) return true;
-  inFlightDeploys.add(request.ts);
-  try {
-    const result = await triggerControlledDeploy({
-      head: request.head,
-      githubToken: process.env.DEPLOY_GITHUB_TOKEN!,
-      renderApiKey: process.env.DEPLOY_RENDER_API_KEY!,
-    });
-    await postToThread(`${config.slack.agentLabel} — DEPLOY ${result.status === 'started' ? 'INICIADO' : 'YA LIVE'}\n` +
-      `TARGET: fornexa-ai-reviewer-gemini\nHEAD: ${request.head}\nDEPLOY_ID: ${result.deployId}\n` +
-      `${result.status === 'started' ? 'Pendiente de verificar el estado Live y el health check.' : 'Commit ya desplegado según Render.'}`,
-      request.ts);
-  } catch (error) {
-    // No original request, credentials, HTTP bodies or stack traces in Slack.
-    const reason = (error as Error).message;
-    const safe = /^(main HEAD differs|main changed|Required validate check|Check list may|Render service identity|A deployment is already in progress)/.test(reason)
-      ? reason : 'La comprobación o la API falló; consultar los registros del servicio.';
-    await postToThread(`${config.slack.agentLabel} — DEPLOY BLOQUEADO\n${safe}`, request.ts);
-  } finally {
-    inFlightDeploys.delete(request.ts);
-  }
+  const approval: DeploymentApproval = { mode: 'render', head: request.head, threadTs: request.ts, expiresAt: Date.now() + APPROVAL_TTL_MS };
+  const token = createDeploymentApprovalToken(approval, config.slack.signingSecret!);
+  const text = `${config.slack.agentLabel} — DEPLOY PENDIENTE DE APROBACIÓN\n` +
+    `TARGET: fornexa-ai-reviewer-gemini\nHEAD: ${request.head}\n` +
+    `Una persona autorizada debe confirmar en Slack. La aprobación caduca en dos horas.`;
+  await postToThreadWithBlocks(text, deploymentApprovalBlocks({ mode: 'render', token, target: 'fornexa-ai-reviewer-gemini', head: request.head }), request.ts);
   return true;
 }
 
@@ -119,32 +136,153 @@ async function processVercelDeploy(message: { text: string; ts: string; user?: s
   const request = parseVercelDeploy(message, config.slack.agentLabel);
   if (!request) return false;
   const prior = await readThread(request.ts);
-  if (prior.some(entry => entry.botId && entry.text.startsWith(`${config.slack.agentLabel} — VERCEL `))) return true;
-  if (config.model.provider !== 'gemini' || !vercelDeployAuthorized(request)) {
+  if (prior.some(entry => entry.botId && / — VERCEL (?:COMPLETADO|FALLIDO|YA READY|DEPLOY BLOQUEADO|NO AUTORIZADO)/.test(entry.text))) return true;
+
+  const started = prior.find(entry => entry.botId && entry.text.startsWith(`${config.slack.agentLabel} — VERCEL DEPLOY INICIADO\n`) &&
+    entry.text.includes(`HEAD: ${request.head}\n`));
+  const startedId = started ? /^DEPLOY_ID: (dpl_[a-zA-Z0-9]+)$/m.exec(started.text)?.[1] : undefined;
+  if (startedId && process.env.VERCEL_DEPLOY_API_TOKEN) {
+    await reportVercelDeployStatus(request.ts, request.head, startedId);
+    return true;
+  }
+  if (prior.some(entry => entry.botId && entry.text.startsWith(`${config.slack.agentLabel} — VERCEL PENDIENTE DE APROBACIÓN\n`))) return true;
+
+  if (config.model.provider !== 'gemini' || !vercelDeployApprovalReady()) {
     await postToThread(`${config.slack.agentLabel} — VERCEL NO AUTORIZADO\nLa capacidad no está activa para esta identidad.`, request.ts);
     return true;
   }
-  if (inFlightDeploys.has(request.ts)) return true;
-  inFlightDeploys.add(request.ts);
+  const approval: DeploymentApproval = { mode: 'vercel', head: request.head, threadTs: request.ts, expiresAt: Date.now() + APPROVAL_TTL_MS };
+  const token = createDeploymentApprovalToken(approval, config.slack.signingSecret!);
+  const text = `${config.slack.agentLabel} — VERCEL PENDIENTE DE APROBACIÓN\n` +
+    `TARGET: fornexa\nHEAD: ${request.head}\n` +
+    `Una persona autorizada debe confirmar en Slack. La aprobación caduca en dos horas.`;
+  await postToThreadWithBlocks(text, deploymentApprovalBlocks({ mode: 'vercel', token, target: 'fornexa', head: request.head }), request.ts);
+  return true;
+}
+
+async function reportRenderDeployStatus(threadTs: string, head: string, deployId: string): Promise<'pending' | 'terminal'> {
   try {
+    const status = await getControlledDeployStatus({
+      head,
+      deployId,
+      renderApiKey: process.env.DEPLOY_RENDER_API_KEY!,
+    });
+    if (status === 'pending') return 'pending';
+    await postToThread(`${config.slack.agentLabel} — DEPLOY ${status === 'live' ? 'COMPLETADO' : 'FALLIDO'}\n` +
+      `TARGET: fornexa-ai-reviewer-gemini\nHEAD: ${head}\nDEPLOY_ID: ${deployId}\n` +
+      `${status === 'live' ? 'Render confirma estado Live para el commit aprobado.' : 'Render confirma un estado terminal fallido; no se declara desplegado.'}`,
+      threadTs);
+    return 'terminal';
+  } catch {
+    return 'pending';
+  }
+}
+
+async function reportVercelDeployStatus(threadTs: string, head: string, deploymentId: string): Promise<'pending' | 'terminal'> {
+  try {
+    const status = await getVercelDeployStatus({
+      head,
+      deploymentId,
+      vercelToken: process.env.VERCEL_DEPLOY_API_TOKEN!,
+    });
+    if (status === 'pending') return 'pending';
+    await postToThread(`${config.slack.agentLabel} — VERCEL ${status === 'ready' ? 'COMPLETADO' : 'FALLIDO'}\n` +
+      `TARGET: fornexa\nHEAD: ${head}\nDEPLOY_ID: ${deploymentId}\n` +
+      `${status === 'ready' ? 'Vercel confirma READY para el commit aprobado.' : 'Vercel confirma un estado terminal fallido; no se declara desplegado.'}`,
+      threadTs);
+    return 'terminal';
+  } catch {
+    return 'pending';
+  }
+}
+
+async function monitorDeployment(mode: 'render' | 'vercel', threadTs: string, head: string, deploymentId: string): Promise<void> {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 10_000));
+    const result = mode === 'render'
+      ? await reportRenderDeployStatus(threadTs, head, deploymentId)
+      : await reportVercelDeployStatus(threadTs, head, deploymentId);
+    if (result === 'terminal') return;
+  }
+}
+
+async function processDeploymentApproval(params: {
+  userId: string;
+  actionId: string;
+  approval: DeploymentApproval;
+}): Promise<void> {
+  const { approval, userId, actionId } = params;
+  if (actionId !== APPROVAL_ACTION_IDS[approval.mode]) return;
+  const key = `${approval.mode}:${approval.threadTs}`;
+  if (inFlightDeploys.has(key)) return;
+
+  const thread = await readThread(approval.threadTs);
+  const root = thread.find(message => message.ts === approval.threadTs);
+  if (!root || !thread.some(message => message.botId &&
+      message.text.includes('PENDIENTE DE APROBACIÓN') && message.text.includes(`HEAD: ${approval.head}`))) return;
+  if (thread.some(message => message.botId && / — (?:DEPLOY|VERCEL) (?:COMPLETADO|FALLIDO|YA LIVE|YA READY)/.test(message.text))) return;
+
+  const started = thread.find(message => message.botId && message.text.includes(`HEAD: ${approval.head}\n`) &&
+    (approval.mode === 'render'
+      ? message.text.startsWith(`${config.slack.agentLabel} — DEPLOY INICIADO\n`)
+      : message.text.startsWith(`${config.slack.agentLabel} — VERCEL DEPLOY INICIADO\n`)));
+  const startedId = started
+    ? (approval.mode === 'render'
+      ? /^DEPLOY_ID: (dep-[a-z0-9]+)$/m.exec(started.text)?.[1]
+      : /^DEPLOY_ID: (dpl_[a-zA-Z0-9]+)$/m.exec(started.text)?.[1])
+    : undefined;
+  if (startedId) {
+    if (approval.mode === 'render') await reportRenderDeployStatus(approval.threadTs, approval.head, startedId);
+    else await reportVercelDeployStatus(approval.threadTs, approval.head, startedId);
+    return;
+  }
+
+  inFlightDeploys.add(key);
+  try {
+    if (approval.mode === 'render') {
+      const request = parseDeployRequest(root, config.slack.agentLabel);
+      if (!request || request.head !== approval.head || !renderDeployApproverAuthorized(userId)) {
+        await postToThread(`${config.slack.agentLabel} — APROBACIÓN RECHAZADA\nLa identidad o el contexto de la aprobación no está autorizado.`, approval.threadTs);
+        return;
+      }
+      const result = await triggerControlledDeploy({
+        head: approval.head,
+        githubToken: process.env.DEPLOY_GITHUB_TOKEN!,
+        renderApiKey: process.env.DEPLOY_RENDER_API_KEY!,
+      });
+      if (result.status === 'already_live') {
+        await postToThread(`${config.slack.agentLabel} — DEPLOY YA LIVE\nTARGET: fornexa-ai-reviewer-gemini\nHEAD: ${approval.head}\nDEPLOY_ID: ${result.deployId}\nAprobación verificada en Slack; Render ya servía el commit exacto.`, approval.threadTs);
+        return;
+      }
+      await postToThread(`${config.slack.agentLabel} — DEPLOY INICIADO\nTARGET: fornexa-ai-reviewer-gemini\nHEAD: ${approval.head}\nDEPLOY_ID: ${result.deployId}\nAprobado por <@${userId}>. Se verificará el estado terminal incluso después de un reinicio.`, approval.threadTs);
+      void monitorDeployment('render', approval.threadTs, approval.head, result.deployId);
+      return;
+    }
+
+    const request = parseVercelDeploy(root, config.slack.agentLabel);
+    if (!request || request.head !== approval.head || !vercelDeployApproverAuthorized(userId)) {
+      await postToThread(`${config.slack.agentLabel} — APROBACIÓN RECHAZADA\nLa identidad o el contexto de la aprobación no está autorizado.`, approval.threadTs);
+      return;
+    }
     const result = await triggerVercelDeploy({
-      head: request.head,
+      head: approval.head,
       githubToken: process.env.VERCEL_DEPLOY_GITHUB_TOKEN!,
       vercelToken: process.env.VERCEL_DEPLOY_API_TOKEN!,
     });
-    await postToThread(`${config.slack.agentLabel} — VERCEL ${result.status === 'started' ? 'DEPLOY INICIADO' : 'YA READY'}\n` +
-      `TARGET: fornexa\nHEAD: ${request.head}\nDEPLOY_ID: ${result.deploymentId}\n` +
-      `${result.status === 'started' ? 'Pendiente de comprobar READY, alias de producción y health.' : 'El último despliegue de producción ya corresponde al HEAD solicitado.'}`,
-      request.ts);
+    if (result.status === 'already_ready') {
+      await postToThread(`${config.slack.agentLabel} — VERCEL YA READY\nTARGET: fornexa\nHEAD: ${approval.head}\nDEPLOY_ID: ${result.deploymentId}\nAprobación verificada en Slack; Vercel ya servía el commit exacto.`, approval.threadTs);
+      return;
+    }
+    await postToThread(`${config.slack.agentLabel} — VERCEL DEPLOY INICIADO\nTARGET: fornexa\nHEAD: ${approval.head}\nDEPLOY_ID: ${result.deploymentId}\nAprobado por <@${userId}>. Se verificará el estado terminal de forma recuperable.`, approval.threadTs);
+    void monitorDeployment('vercel', approval.threadTs, approval.head, result.deploymentId);
   } catch (error) {
     const reason = (error as Error).message;
-    const safe = /^(Fornexa main HEAD differs|Fornexa main changed|Fornexa CI validate|Check list may|Vercel project identity|A Vercel deployment is already in progress)/.test(reason)
-      ? reason : 'La comprobación o la API falló; consultar los registros del servicio.';
-    await postToThread(`${config.slack.agentLabel} — VERCEL DEPLOY BLOQUEADO\n${safe}`, request.ts);
+    const allowed = /^(main HEAD differs|main changed|Required validate check|Check list may|Render service identity|A deployment is already in progress|Fornexa main HEAD differs|Fornexa main changed|Fornexa CI validate|Vercel project identity|A Vercel deployment is already in progress)/.test(reason);
+    const prefix = approval.mode === 'render' ? 'DEPLOY BLOQUEADO' : 'VERCEL DEPLOY BLOQUEADO';
+    await postToThread(`${config.slack.agentLabel} — ${prefix}\n${allowed ? reason : 'La comprobación o la API falló; consultar los registros del servicio.'}`, approval.threadTs);
   } finally {
-    inFlightDeploys.delete(request.ts);
+    inFlightDeploys.delete(key);
   }
-  return true;
 }
 
 async function processReviewRequest(request: ReviewRequest): Promise<void> {
@@ -579,6 +717,47 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   }
 }
 
+async function handleSlackInteractions(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!config.slack.signingSecret) {
+    sendJson(res, 503, { ok: false, error: "slack_interactions_not_configured" });
+    return;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await readRawBody(req);
+  } catch {
+    sendJson(res, 413, { ok: false, error: "request_too_large" });
+    return;
+  }
+  if (!verifySlackSignature({
+    rawBody,
+    timestamp: req.headers["x-slack-request-timestamp"] as string | undefined,
+    signature: req.headers["x-slack-signature"] as string | undefined,
+    signingSecret: config.slack.signingSecret,
+  })) {
+    sendJson(res, 401, { ok: false, error: "invalid_signature" });
+    return;
+  }
+
+  const interaction = parseSlackDeploymentInteraction(rawBody);
+  if (!interaction || interaction.channelId !== config.slack.channelId) {
+    sendJson(res, 400, { ok: false, error: "invalid_interaction" });
+    return;
+  }
+  const approval = parseDeploymentApprovalToken(interaction.token, config.slack.signingSecret);
+  if (!approval || interaction.actionId !== APPROVAL_ACTION_IDS[approval.mode]) {
+    sendJson(res, 400, { ok: false, error: "invalid_or_expired_approval" });
+    return;
+  }
+
+  sendJson(res, 200, { ok: true });
+  setImmediate(() => {
+    processDeploymentApproval({ userId: interaction.userId, actionId: interaction.actionId, approval })
+      .catch(() => console.error('Deployment approval handling failed'));
+  });
+}
+
 function startHttpServer(): void {
   const port = Number(process.env.PORT) || 10000;
   http
@@ -597,6 +776,14 @@ function startHttpServer(): void {
       if (req.method === "POST" && pathname === "/slack/events") {
         handleSlackEvents(req, res).catch((err) => {
           console.error("Error atendiendo Slack Events:", err);
+          if (!res.headersSent) sendJson(res, 500, { ok: false, error: "internal_error" });
+        });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/slack/interactions") {
+        handleSlackInteractions(req, res).catch((err) => {
+          console.error("Error atendiendo Slack Interactions:", err);
           if (!res.headersSent) sendJson(res, 500, { ok: false, error: "internal_error" });
         });
         return;
