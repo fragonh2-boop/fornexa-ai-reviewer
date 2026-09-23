@@ -19,6 +19,13 @@ import {
   runContextOnboarding,
 } from "./agent.js";
 import {
+  sidecarManager,
+  handleSidecarPoll,
+  handleSidecarResponse,
+  sendJson,
+  readRawBody,
+} from "./tools/external-services.js";
+import {
   extractHumanMessage,
   extractReviewRequest,
   parseSlackEnvelope,
@@ -58,27 +65,6 @@ const inFlightMentions = new Map<string, number>();
 const processedEventIds = new Set<string>();
 const reportMalformed = createDiagnosticReporter(config.slack.agentLabel, postToThread);
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body));
-}
-
-async function readRawBody(req: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.length;
-    if (size > MAX_REQUEST_BODY_BYTES) {
-      throw new Error("El cuerpo de la petición supera 1 MiB.");
-    }
-    chunks.push(buffer);
-  }
-
-  return Buffer.concat(chunks).toString("utf8");
-}
 
 function rememberEvent(eventId: string): boolean {
   if (processedEventIds.has(eventId)) return false;
@@ -532,6 +518,27 @@ function startHttpServer(): void {
       if (req.method === "POST" && pathname === "/slack/events") {
         handleSlackEvents(req, res).catch((err) => {
           console.error("Error atendiendo Slack Events:", err);
+          if (!res.headersSent) sendJson(res, 500, { ok: false, error: "internal_error" });
+        });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/sidecar/status") {
+        sendJson(res, 200, { ok: true, online: sidecarManager.isOnline() });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/sidecar/poll") {
+        handleSidecarPoll(req, res, config.sidecarToken).catch((err) => {
+          console.error("Error en /sidecar/poll:", err);
+          if (!res.headersSent) sendJson(res, 500, { ok: false, error: "internal_error" });
+        });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/sidecar/response") {
+        handleSidecarResponse(req, res, config.sidecarToken).catch((err) => {
+          console.error("Error en /sidecar/response:", err);
           if (!res.headersSent) sendJson(res, 500, { ok: false, error: "internal_error" });
         });
         return;
