@@ -1,20 +1,21 @@
 import { createHash } from 'node:crypto';
 import { parseReviewRequest } from './review-request.js';
 import { parseImplementation } from './implementation.js';
+import { isSenderAllowed, type BotAllowlistOptions } from './slack-events.js';
 interface Message { text: string; ts: string; user?: string; botId?: string; threadTs?: string }
 /** Constant diagnostics: never reflect request contents, which may contain credentials. */
-export function malformedHandoff(message: Message, label: string): boolean {
-  return Boolean(message.user && !message.botId && (!message.threadTs || message.threadTs === message.ts)
+export function malformedHandoff(message: Message, label: string, options: BotAllowlistOptions = {}): boolean {
+  return Boolean((message.user || message.botId) && isSenderAllowed({ botId: message.botId, user: message.user }, options) && (!message.threadTs || message.threadTs === message.ts)
     && message.text.includes(`${label} — ACCIÓN REQUERIDA`)
     && !parseReviewRequest(message.text, label) && !parseImplementation(message.text, label));
 }
 /** Bounded, duplicate-safe feedback shared by polling/events. Historical traffic is ignored. */
-export function createDiagnosticReporter(label: string, send: (text: string, ts: string) => Promise<void>, now = Date.now) {
+export function createDiagnosticReporter(label: string, send: (text: string, ts: string) => Promise<void>, now = Date.now, options: BotAllowlistOptions = {}) {
   const seen = new Set<string>();
   let windowStart = now();
   let count = 0;
   return async (message: Message): Promise<boolean> => {
-    if (!malformedHandoff(message, label)) return false;
+    if (!malformedHandoff(message, label, options)) return false;
     const age = now() - Number(message.ts) * 1000;
     if (!Number.isFinite(age) || age < -300_000 || age > 3_600_000) return true;
     const id = createHash('sha256').update(message.ts + '\n' + message.text).digest('hex');

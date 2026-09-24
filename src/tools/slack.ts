@@ -73,6 +73,8 @@ export async function readThread(threadTs: string): Promise<SlackMessage[]> {
   return messages;
 }
 
+import { isSenderAllowed, type BotAllowlistOptions } from "../slack-events.js";
+
 /**
  * Busca el handoff más reciente dirigido a esta IA que todavía no tiene
  * respuesta posterior con la misma etiqueta.
@@ -85,12 +87,14 @@ export async function readThread(threadTs: string): Promise<SlackMessage[]> {
  */
 export function findPendingHandoff(
   messages: SlackMessage[],
-  agentLabel: string
+  agentLabel: string,
+  options: BotAllowlistOptions = {}
 ): (ReviewRequest & { raw: SlackMessage }) | null {
   const requestMarker = `${agentLabel} — ACCIÓN REQUERIDA`;
 
   for (const msg of messages) {
-    if (msg.botId || !msg.user || (msg.threadTs && msg.threadTs !== msg.ts)) continue;
+    if (!isSenderAllowed({ botId: msg.botId, user: msg.user }, options)) continue;
+    if (msg.threadTs && msg.threadTs !== msg.ts) continue;
     if (msg.text.includes(requestMarker)) {
       const parsed = parseReviewRequest(msg.text, agentLabel);
       if (!parsed) continue;

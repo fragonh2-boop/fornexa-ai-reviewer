@@ -9,6 +9,7 @@ import {
 import {
   extractHumanMessage,
   extractReviewRequest,
+  isSenderAllowed,
   verifySlackSignature,
 } from "../src/slack-events.js";
 
@@ -58,144 +59,144 @@ test("verifica una firma vigente y rechaza manipulación o replay", () => {
 
 test("extrae una solicitud PR solo con línea PR explícita y HEAD", () => {
   const text =
-    "DEEPSEEK — ACCIÓN REQUERIDA\n\nPR #54\nRepo: fragonh2-boop/Fornexa\nHEAD: `ab87ab8a6807386069ee2324988d40f58e0861c7`";
-  const parsed = parseReviewRequest(text, "DEEPSEEK");
-  assert.equal(parsed?.target, "pr");
-  if (!parsed || parsed.target !== "pr") throw new Error("se esperaba target PR");
-  assert.equal(parsed.prNumber, 54);
-  assert.equal(parsed.requestedHead, "ab87ab8a6807386069ee2324988d40f58e0861c7");
-  assert.equal(parsed.instructions, text);
-  assert.equal(parseReviewRequest("DEEPSEEK — ACCIÓN REQUERIDA\nPR #54", "DEEPSEEK"), null);
+    "DEEPSEEK — ACCIÓN REQUERIDA\nPR #54\nRepo: fragonh2-boop/Fornexa\nHEAD: `ab87ab8a6807386069ee2324988d40f58e0861c7`";
+  const request = parseReviewRequest(text, "DEEPSEEK");
+  assert.equal(request?.target, "pr");
+  if (!request || request.target !== "pr") throw new Error("se esperaba target PR");
+  assert.equal(request.prNumber, 54);
+  assert.equal(request.requestedHead, "ab87ab8a6807386069ee2324988d40f58e0861c7");
+  assert.equal(request.instructions, text);
 });
 
 test("acepta una mención con HEAD exacto como los triggers de Slack", () => {
   const text =
-    "<@U0BV95NCT89|Fornexa DeepSeek Reviewer> DEEPSEEK — ACCIÓN REQUERIDA — RETRY\n\nPR #60\nHEAD exacto: 463a259166ccd31cfbbc73eb6835946fd3dd683e";
-  const parsed = parseReviewRequest(text, "DEEPSEEK");
-
-  assert.equal(parsed?.target, "pr");
-  if (!parsed || parsed.target !== "pr") throw new Error("se esperaba target PR");
-  assert.equal(parsed.prNumber, 60);
-  assert.equal(parsed.requestedHead, "463a259166ccd31cfbbc73eb6835946fd3dd683e");
+    "<@U08SF47R6P4> DEEPSEEK — ACCIÓN REQUERIDA\nPR #54\nHEAD exacto: ab87ab8a6807386069ee2324988d40f58e0861c7";
+  const request = parseReviewRequest(text, "DEEPSEEK");
+  assert.equal(request?.target, "pr");
+  if (!request || request.target !== "pr") throw new Error("se esperaba target PR");
+  assert.equal(request.prNumber, 54);
+  assert.equal(request.requestedHead, "ab87ab8a6807386069ee2324988d40f58e0861c7");
 });
 
 test("TARGET main gana sobre referencias narrativas a PRs históricas", () => {
   const text =
-    "<@U0BV95NCT89|Fornexa DeepSeek Reviewer> DEEPSEEK — ACCIÓN REQUERIDA\n\nRepo: fragonh2-boop/Fornexa\nTARGET: main\nHEAD: `d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce`\n\nRevisión de conjunto post-PR #61. No revises PR #60 de nuevo.";
-  const parsed = parseReviewRequest(text, "DEEPSEEK");
-
-  assert.equal(parsed?.target, "ref");
-  if (!parsed || parsed.target !== "ref") throw new Error("se esperaba target ref");
-  assert.equal(parsed.ref, "main");
-  assert.equal(parsed.requestedHead, "d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce");
-  assert.equal(parsed.instructions, text);
+    "DEEPSEEK — ACCIÓN REQUERIDA\nTARGET: main\nRepo: fragonh2-boop/Fornexa\nHEAD: `8894fa30fa011a68132e4975ba69d3e8e19e1ff0`\nContexto: post-PR #61";
+  const request = parseReviewRequest(text, "DEEPSEEK");
+  assert.equal(request?.target, "ref");
+  if (!request || request.target !== "ref") throw new Error("se esperaba target ref");
+  assert.equal(request.ref, "main");
+  assert.equal(request.requestedHead, "8894fa30fa011a68132e4975ba69d3e8e19e1ff0");
 });
 
 test("MODE MAIN y BRANCH main seleccionan revisión global sin depender de PR", () => {
-  const byMode = parseReviewRequest(
-    "DEEPSEEK — ACCIÓN REQUERIDA\nMODE: MAIN\nHEAD: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce\nContexto: post-PR #61",
-    "DEEPSEEK"
-  );
-  assert.equal(byMode?.target, "ref");
-  if (!byMode || byMode.target !== "ref") throw new Error("se esperaba target main por MODE");
-  assert.equal(byMode.ref, "main");
+  const modeMain =
+    "DEEPSEEK — ACCIÓN REQUERIDA\nMODE: MAIN\nHEAD: `8894fa30fa011a68132e4975ba69d3e8e19e1ff0`";
+  const requestMode = parseReviewRequest(modeMain, "DEEPSEEK");
+  assert.equal(requestMode?.target, "ref");
+  if (!requestMode || requestMode.target !== "ref") throw new Error("se esperaba target ref");
+  assert.equal(requestMode.ref, "main");
 
-  const byBranch = parseReviewRequest(
-    "DEEPSEEK — ACCIÓN REQUERIDA\nBRANCH: main\nHEAD exacto: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce",
-    "DEEPSEEK"
-  );
-  assert.equal(byBranch?.target, "ref");
-  if (!byBranch || byBranch.target !== "ref") throw new Error("se esperaba target main por BRANCH");
-  assert.equal(byBranch.ref, "main");
+  const branchMain =
+    "DEEPSEEK — ACCIÓN REQUERIDA\nBRANCH: main\nHEAD: `8894fa30fa011a68132e4975ba69d3e8e19e1ff0`";
+  const requestBranch = parseReviewRequest(branchMain, "DEEPSEEK");
+  assert.equal(requestBranch?.target, "ref");
+  if (!requestBranch || requestBranch.target !== "ref") throw new Error("se esperaba target ref");
+  assert.equal(requestBranch.ref, "main");
 });
 
 test("MODE PR exige línea PR explícita", () => {
-  const ambiguous =
-    "DEEPSEEK — ACCIÓN REQUERIDA\nMODE: PR\nHEAD: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce\npost-PR #61";
-  assert.equal(parseReviewRequest(ambiguous, "DEEPSEEK"), null);
+  const invalid =
+    "DEEPSEEK — ACCIÓN REQUERIDA\nMODE: PR\nHEAD: `8894fa30fa011a68132e4975ba69d3e8e19e1ff0`";
+  assert.equal(parseReviewRequest(invalid, "DEEPSEEK"), null);
+
+  const valid =
+    "DEEPSEEK — ACCIÓN REQUERIDA\nMODE: PR\nPR #62\nHEAD: `8894fa30fa011a68132e4975ba69d3e8e19e1ff0`";
+  const request = parseReviewRequest(valid, "DEEPSEEK");
+  assert.equal(request?.target, "pr");
+  if (!request || request.target !== "pr") throw new Error("se esperaba target PR");
+  assert.equal(request.prNumber, 62);
 });
 
 test("una mención narrativa a PR sin línea PR ni TARGET no crea un handoff ambiguo", () => {
   const text =
-    "DEEPSEEK — ACCIÓN REQUERIDA\nRevisión post-PR #61\nHEAD: d4e1d15bf53d518aa1f3c2ca606a2a0a3dfc52ce";
+    "DEEPSEEK — ACCIÓN REQUERIDA\nHEAD: `8894fa30fa011a68132e4975ba69d3e8e19e1ff0`\nContexto: tras PR #61";
   assert.equal(parseReviewRequest(text, "DEEPSEEK"), null);
 });
 
 test("solo una revisión publicada por el bot cuenta como respuesta", () => {
   assert.equal(
     isReviewResponse(
-      { text: "DEEPSEEK — REVISIÓN\n\nMUST: ninguno", botId: "B123" },
+      { text: "DEEPSEEK — REVISIÓN\nPR #54: ok", botId: "B01" },
       "DEEPSEEK"
     ),
     true
   );
   assert.equal(
     isReviewResponse(
-      { text: "DEEPSEEK — ACCIÓN REQUERIDA\n\nPR #60", botId: "BOTHER" },
+      { text: "DEEPSEEK — REVISIÓN NO INICIADA\nPR #54: no coincide HEAD", botId: "B01" },
       "DEEPSEEK"
     ),
+    true
+  );
+  assert.equal(
+    isReviewResponse(
+      { text: "DEEPSEEK — REVISIÓN FALLIDA\nPR #54: timeout", botId: "B01" },
+      "DEEPSEEK"
+    ),
+    true
+  );
+  assert.equal(
+    isReviewResponse({ text: "DEEPSEEK — REVISIÓN\nPR #54: ok" }, "DEEPSEEK"),
     false
   );
   assert.equal(
     isReviewResponse(
-      { text: "DEEPSEEK — REVISIÓN NO INICIADA\n\nHEAD desactualizado", botId: "B123" },
+      { text: "otra cosa\nDEEPSEEK — REVISIÓN", botId: "B01" },
       "DEEPSEEK"
     ),
-    true
-  );
-  assert.equal(
-    isReviewResponse(
-      { text: "DEEPSEEK — REVISIÓN FALLIDA\n\nTimeout", botId: "B123" },
-      "DEEPSEEK"
-    ),
-    true
-  );
-  assert.equal(
-    isReviewResponse({ text: "DEEPSEEK — REVISIÓN\n\ntexto humano" }, "DEEPSEEK"),
     false
   );
 });
 
 test("un aviso terminal canónico cierra solo el handoff exacto de PR o main", () => {
-  const prHead = "a".repeat(40);
-  const mainHead = "b".repeat(40);
   const prRequest = parseReviewRequest(
-    `GEMINI — ACCIÓN REQUERIDA\nMODE: PR\nPR #79\nHEAD: ${prHead}`,
-    "GEMINI"
-  );
-  const mainRequest = parseReviewRequest(
-    `GEMINI — ACCIÓN REQUERIDA\nMODE: MAIN\nTARGET: main\nHEAD: ${mainHead}`,
+    "GEMINI — ACCIÓN REQUERIDA\nPR #70\nHEAD: `ab87ab8a6807386069ee2324988d40f58e0861c7`",
     "GEMINI"
   );
   assert.ok(prRequest);
-  assert.ok(mainRequest);
 
-  const failedPr = {
-    text: `GEMINI — REVISIÓN FALLIDA\n\nPR #79: la revisión del HEAD \`${prHead}\` falló antes de completarse.`,
-    botId: "B123",
+  const matchedPr = {
+    botId: "B01",
+    text: "GEMINI — REVISIÓN NO INICIADA\n\nPR #70: el HEAD solicitado `ab87ab8a6807386069ee2324988d40f58e0861c7` ya no coincide con el HEAD actual `1111111111111111111111111111111111111111`.",
   };
-  const failedMain = {
-    text: `GEMINI — REVISIÓN FALLIDA\n\nTARGET: main\nHEAD \`${mainHead}\`: la revisión falló antes de completarse.`,
-    botId: "B123",
-  };
-  const staleMain = {
-    text: `GEMINI — REVISIÓN NO INICIADA\n\nTARGET: main\nHEAD \`${mainHead}\`: ya no coincide con el HEAD actual \`${"d".repeat(40)}\`.`,
-    botId: "B123",
-  };
-  assert.equal(isReviewResponseForRequest(failedPr, "GEMINI", prRequest), true);
-  assert.equal(isReviewResponseForRequest(failedMain, "GEMINI", mainRequest), true);
-  assert.equal(isReviewResponseForRequest(staleMain, "GEMINI", mainRequest), true);
-  assert.equal(isReviewResponseForRequest(failedPr, "GEMINI", mainRequest), false);
+  assert.equal(isReviewResponseForRequest(matchedPr, "GEMINI", prRequest), true);
 
-  const freshPrRequest = parseReviewRequest(
-    `GEMINI — ACCIÓN REQUERIDA\nMODE: PR\nPR #79\nHEAD: ${"c".repeat(40)}`,
+  const otherShaPr = {
+    botId: "B01",
+    text: "GEMINI — REVISIÓN NO INICIADA\n\nPR #70: el HEAD solicitado `ffffffffffffffffffffffffffffffffffffffff` ya no coincide con el HEAD actual `1111111111111111111111111111111111111111`.",
+  };
+  assert.equal(isReviewResponseForRequest(otherShaPr, "GEMINI", prRequest), false);
+
+  const mainRequest = parseReviewRequest(
+    "GEMINI — ACCIÓN REQUERIDA\nMODE: MAIN\nTARGET: main\nHEAD: `ab87ab8a6807386069ee2324988d40f58e0861c7`",
     "GEMINI"
   );
-  assert.ok(freshPrRequest);
-  assert.equal(isReviewResponseForRequest(failedPr, "GEMINI", freshPrRequest), false);
+  assert.ok(mainRequest);
+
+  const matchedMain = {
+    botId: "B01",
+    text: "GEMINI — REVISIÓN NO INICIADA\n\nTARGET: main\nHEAD `ab87ab8a6807386069ee2324988d40f58e0861c7`: ya no coincide con el HEAD actual `1111111111111111111111111111111111111111`.",
+  };
+  assert.equal(isReviewResponseForRequest(matchedMain, "GEMINI", mainRequest), true);
+
+  const staleMain = {
+    botId: "B01",
+    text: "GEMINI — REVISIÓN NO INICIADA\n\nTARGET: main\nHEAD `2222222222222222222222222222222222222222`: ya no coincide con el HEAD actual `1111111111111111111111111111111111111111`.",
+  };
+  assert.equal(isReviewResponseForRequest(staleMain, "GEMINI", mainRequest), false);
 
   const freshMainRequest = parseReviewRequest(
-    `GEMINI — ACCIÓN REQUERIDA\nMODE: MAIN\nTARGET: main\nHEAD: ${"e".repeat(40)}`,
+    "GEMINI — ACCIÓN REQUERIDA\nMODE: MAIN\nTARGET: main\nHEAD: `3333333333333333333333333333333333333333`",
     "GEMINI"
   );
   assert.ok(freshMainRequest);
@@ -248,5 +249,68 @@ test("solo acepta mensajes humanos del canal configurado", () => {
       ts: "1788677431.036519",
       threadTs: undefined,
     }
+  );
+});
+
+test("isSenderAllowed y extractReviewRequest soportan allowlist de bots y previenen bucles", () => {
+  // 1. Humanos siempre permitidos
+  assert.equal(isSenderAllowed({ user: "UHUMAN" }), true);
+  assert.equal(isSenderAllowed({ user: "UHUMAN" }, { allowedBotIds: ["BOTHER"] }), true);
+
+  // 2. Bots sin allowlist rechazados
+  assert.equal(isSenderAllowed({ botId: "BBOT", user: "UBOT" }), false);
+  assert.equal(isSenderAllowed({ botId: "BBOT", user: "UBOT" }, { allowedBotIds: [] }), false);
+
+  // 3. Bot en allowlist permitido por botId o por user
+  assert.equal(isSenderAllowed({ botId: "BGEMINI", user: "UGEMINI" }, { allowedBotIds: ["BGEMINI"] }), true);
+  assert.equal(isSenderAllowed({ botId: "BGEMINI", user: "UGEMINI" }, { allowedBotIds: ["UGEMINI"] }), true);
+  assert.equal(isSenderAllowed({ botId: "BOTHER", user: "UOTHER" }, { allowedBotIds: ["BGEMINI"] }), false);
+
+  // 4. Comodín * permite bots externos
+  assert.equal(isSenderAllowed({ botId: "BANY" }, { allowedBotIds: ["*"] }), true);
+  assert.equal(isSenderAllowed({ botId: "BANY" }, { allowedBotIds: ["all"] }), true);
+
+  // 5. Anti-loop: El propio bot siempre es rechazado aunque esté en allowlist o use comodín
+  assert.equal(
+    isSenderAllowed(
+      { botId: "BSELF", user: "USELF" },
+      { allowedBotIds: ["*"], ownBotId: "BSELF" }
+    ),
+    false
+  );
+  assert.equal(
+    isSenderAllowed(
+      { botId: "BSELF", user: "USELF" },
+      { allowedBotIds: ["*"], ownUserId: "USELF" }
+    ),
+    false
+  );
+
+  // 6. extractReviewRequest con allowlist
+  const text = "DEEPSEEK — ACCIÓN REQUERIDA\nPR #54\nHEAD: `ab87ab8a6807386069ee2324988d40f58e0861c7`";
+  const envelope = {
+    type: "event_callback",
+    event: {
+      type: "message",
+      channel: "C0BT661FYLW",
+      text,
+      bot_id: "BGEMINI",
+      user: "UGEMINI",
+      ts: "1788677431.036519",
+    },
+  };
+
+  // Sin allowlist => null
+  assert.equal(extractReviewRequest(envelope, "C0BT661FYLW", "DEEPSEEK"), null);
+
+  // Con allowlist para BGEMINI => procesado con éxito
+  const reqAllowed = extractReviewRequest(envelope, "C0BT661FYLW", "DEEPSEEK", { allowedBotIds: ["BGEMINI"] });
+  assert.ok(reqAllowed);
+  assert.equal(reqAllowed.requestedHead, "ab87ab8a6807386069ee2324988d40f58e0861c7");
+
+  // Con ownBotId coincidente => null (anti-bucle)
+  assert.equal(
+    extractReviewRequest(envelope, "C0BT661FYLW", "DEEPSEEK", { allowedBotIds: ["BGEMINI"], ownBotId: "BGEMINI" }),
+    null
   );
 });

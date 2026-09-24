@@ -23,6 +23,8 @@ services:
         value: DEEPSEEK
       - key: SLACK_MENTIONS_ENABLED
         value: "false"
+      - key: SLACK_ALLOWED_BOT_IDS
+        value: "B0C39QX9PEY,U0C362TR8HG"
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_OWNER

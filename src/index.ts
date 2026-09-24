@@ -63,7 +63,17 @@ const inFlightReviews = new Map<string, number>();
 const inFlightContextThreads = new Map<string, number>();
 const inFlightMentions = new Map<string, number>();
 const processedEventIds = new Set<string>();
-const reportMalformed = createDiagnosticReporter(config.slack.agentLabel, postToThread);
+const botAllowlistOptions = {
+  allowedBotIds: config.slack.allowedBotIds,
+  ownBotId: config.slack.ownBotId,
+  ownUserId: config.slack.mentions.botUserId,
+};
+const reportMalformed = createDiagnosticReporter(
+  config.slack.agentLabel,
+  postToThread,
+  Date.now,
+  botAllowlistOptions
+);
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
 
 function rememberEvent(eventId: string): boolean {
@@ -391,7 +401,7 @@ async function tick(): Promise<void> {
     if (await reportMalformed(message)) continue;
     if (await processImplementation(message)) break;
   }
-  const pending = findPendingHandoff(messages, config.slack.agentLabel);
+  const pending = findPendingHandoff(messages, config.slack.agentLabel, botAllowlistOptions);
 
   if (pending) {
     await processReviewRequest(pending);
@@ -461,7 +471,7 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   sendJson(res, 200, { ok: true });
 
   if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
-  const humanMessage = extractHumanMessage(envelope, config.slack.channelId);
+  const humanMessage = extractHumanMessage(envelope, config.slack.channelId, botAllowlistOptions);
   if (humanMessage && await reportMalformed(humanMessage)) return;
   if (humanMessage && /^MODE:\s*IMPLEMENT\s*$/m.test(humanMessage.text)) {
     setImmediate(() => { processImplementation(humanMessage).catch(() => console.error('Implementation failed; checkpoint retained')); });
@@ -480,7 +490,8 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   const request = extractReviewRequest(
     envelope,
     config.slack.channelId,
-    config.slack.agentLabel
+    config.slack.agentLabel,
+    botAllowlistOptions
   );
   if (request) {
     setImmediate(() => {
