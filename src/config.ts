@@ -52,6 +52,11 @@ export const config = {
       botUserId,
     },
     botChannelToken: process.env.SLACK_BOT_CHANNEL_TOKEN?.trim() || null,
+    allowedBotIds: (process.env.SLACK_ALLOWED_BOT_IDS ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean),
+    ownBotId: process.env.SLACK_BOT_ID?.trim() || null,
   },
   github: {
     token: required("GITHUB_TOKEN"),

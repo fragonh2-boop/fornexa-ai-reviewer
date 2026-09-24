@@ -62,29 +62,59 @@ export function parseSlackEnvelope(rawBody: string): SlackEventsEnvelope | null 
   }
 }
 
+export interface BotAllowlistOptions {
+  allowedBotIds?: string[];
+  ownBotId?: string | null;
+  ownUserId?: string | null;
+}
+
+export function isSenderAllowed(
+  sender: { botId?: string; user?: string },
+  options: BotAllowlistOptions = {}
+): boolean {
+  if (!sender.botId) return Boolean(sender.user);
+
+  const { allowedBotIds = [], ownBotId, ownUserId } = options;
+
+  // Never allow the bot itself to trigger requests (strict anti-loop prevention)
+  if (ownBotId && sender.botId === ownBotId) return false;
+  if (ownUserId && sender.user === ownUserId) return false;
+
+  if (allowedBotIds.length === 0) return false;
+  if (allowedBotIds.includes("*") || allowedBotIds.includes("all")) return true;
+
+  if (sender.botId && allowedBotIds.includes(sender.botId)) return true;
+  if (sender.user && allowedBotIds.includes(sender.user)) return true;
+
+  return false;
+}
+
 export function extractReviewRequest(
   envelope: SlackEventsEnvelope,
   expectedChannel: string,
-  agentLabel: string
+  agentLabel: string,
+  options: BotAllowlistOptions = {}
 ): ReviewRequest | null {
-  const event = extractHumanMessage(envelope, expectedChannel);
+  const event = extractHumanMessage(envelope, expectedChannel, options);
   return event ? parseReviewRequest(event.text, agentLabel) : null;
 }
 
 export function extractHumanMessage(
   envelope: SlackEventsEnvelope,
-  expectedChannel: string
+  expectedChannel: string,
+  options: BotAllowlistOptions = {}
 ): SlackHumanMessageEvent | null {
   if (envelope.type !== "event_callback") return null;
   const event = envelope.event;
+  const hasSender = Boolean(event?.user || event?.bot_id);
   if (
     !event ||
     (event.type !== "message" && event.type !== "app_mention") ||
     event.subtype ||
-    event.bot_id ||
+    !isSenderAllowed({ botId: event.bot_id, user: event.user }, options) ||
     event.channel !== expectedChannel ||
     typeof event.text !== "string" ||
-    typeof event.user !== "string" ||
+    !hasSender ||
     typeof event.ts !== "string"
   ) {
     return null;
@@ -93,7 +123,8 @@ export function extractHumanMessage(
   return {
     channel: event.channel,
     text: event.text,
-    user: event.user,
+    user: event.user ?? event.bot_id!,
+    ...(event.bot_id ? { botId: event.bot_id } : {}),
     ts: event.ts,
     threadTs: event.thread_ts,
   };

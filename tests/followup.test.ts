@@ -20,6 +20,8 @@ test('malformed marker/short HEAD gets diagnostic while valid requests, bots and
   assert.equal(malformedHandoff(message,'GEMINI'),true);
   assert.equal(malformedHandoff({...message,text:task},'GEMINI'),false);
   assert.equal(malformedHandoff({...message,botId:'B1'},'GEMINI'),false);
+  assert.equal(malformedHandoff({...message,botId:'B1'},'GEMINI',{allowedBotIds:['B1']}),true);
+  assert.equal(malformedHandoff({...message,botId:'B1'},'GEMINI',{allowedBotIds:['B2']}),false);
   assert.equal(malformedHandoff({...message,threadTs:'999'},'GEMINI'),false);
   assert.equal(malformedHandoff({...message,text:'Preface\n'+task},'GEMINI'),true);
 });
