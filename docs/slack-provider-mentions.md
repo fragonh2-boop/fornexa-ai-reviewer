@@ -51,8 +51,11 @@ AI_PROVIDER=gpt|claude|gemini|deepseek
 SLACK_AGENT_LABEL=GPT|CLAUDE|GEMINI|DEEPSEEK
 SLACK_BOT_TOKEN=<dedicated xoxb token>
 SLACK_SIGNING_SECRET=<dedicated signing secret>
+APPROVAL_HMAC_SECRET=<different random secret, at least 32 characters, used only for approval buttons>
 SLACK_BOT_USER_ID=<the bot's U… identity>
 SLACK_MENTIONS_ENABLED=true
+SIDECAR_APPROVAL_ENABLED=false
+SIDECAR_APPROVER_SLACK_USER_IDS=<comma-separated human U… IDs allowed to press the signed button>
 ```
 
 Configure only the selected provider's API key and model. Keep the GitHub token read-only. Keep `IMPLEMENT_ENABLED=false` unless the existing independent authorization and durable-checkpoint gates have been satisfied.
@@ -65,6 +68,8 @@ Configure only the selected provider's API key and model. Keep the GitHub token 
 - A prompt is limited to 12 KiB; retained conversation is limited to 20 messages and 64 KiB.
 - A thread is limited to 8 human turns. The ninth receives a terminal failure and cannot trigger a model call.
 - Text matching known secret formats is rejected before a model call.
+- The explicit local-bridge phrase creates a signed approval button. A Slack-signed click from the separate approver allowlist is required; an empty list denies every request.
+- Ordinary conversation never registers `query_local_antigravity` as a model tool, so paraphrasing or prompt injection cannot bypass that button.
 - Model calls keep the existing timeout and provider response validation.
 - A failed turn receives a terminal failure marker and is not retried forever. A human can explicitly mention the bot again.
 - Polling examines at most 50 recent mention threads per cycle as recovery for missed events.

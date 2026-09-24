@@ -163,3 +163,14 @@ export async function postToThreadSmart(text: string | string[], threadTs: strin
 export async function postToThread(text: string | string[], threadTs: string): Promise<void> {
   await postToThreadSmart(text, threadTs);
 }
+
+export async function postToThreadWithBlocks(text: string, blocks: object[], threadTs: string): Promise<void> {
+  const client = getEffectiveSlackClient();
+  await client.chat.postMessage({
+    channel: config.slack.channelId,
+    thread_ts: threadTs,
+    text,
+    blocks: blocks as never[],
+    unfurl_links: false,
+  });
+}
