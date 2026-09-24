@@ -26,7 +26,9 @@ export function parseDeployRequest(message: {
 export function deployApprovalReady(env: NodeJS.ProcessEnv = process.env): boolean {
   const approvers = (env.DEPLOY_APPROVER_SLACK_USER_IDS ?? '').split(',').map(value => value.trim()).filter(Boolean);
   return env.DEPLOY_ENABLED === 'true' && approvers.length > 0 &&
-    Boolean(env.DEPLOY_GITHUB_TOKEN && env.DEPLOY_RENDER_API_KEY && env.SLACK_SIGNING_SECRET);
+    approvers.every(value => /^U[A-Z0-9]+$/.test(value)) &&
+    Boolean(env.DEPLOY_GITHUB_TOKEN && env.DEPLOY_RENDER_API_KEY &&
+      env.SLACK_SIGNING_SECRET && (env.APPROVAL_HMAC_SECRET?.length ?? 0) >= 32);
 }
 
 export function renderDeployApproverAuthorized(userId: string, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -82,7 +84,8 @@ export async function triggerControlledDeploy(params: {
   const checks = await api.checks.listForRef({ owner, repo, ref: params.head, per_page: 100 });
   if (checks.data.total_count >= 100) throw new Error('Check list may be incomplete');
   const validation = checks.data.check_runs.filter(check => check.name === 'validate' && check.app?.slug === 'github-actions');
-  if (validation.length !== 1 || validation[0].status !== 'completed' || validation[0].conclusion !== 'success') {
+  if (validation.length < 1 || validation.some(check =>
+    check.status !== 'completed' || check.conclusion !== 'success')) {
     throw new Error('Required validate check is not green on the requested SHA');
   }
 

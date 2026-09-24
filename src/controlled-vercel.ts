@@ -21,7 +21,9 @@ export function parseVercelDeploy(message: { text: string; ts: string; user?: st
 export function vercelDeployApprovalReady(env: NodeJS.ProcessEnv = process.env): boolean {
   const approvers = (env.VERCEL_DEPLOY_APPROVER_SLACK_USER_IDS ?? '').split(',').map(v => v.trim()).filter(Boolean);
   return env.VERCEL_DEPLOY_ENABLED === 'true' && approvers.length > 0 &&
-    Boolean(env.VERCEL_DEPLOY_GITHUB_TOKEN && env.VERCEL_DEPLOY_API_TOKEN && env.SLACK_SIGNING_SECRET);
+    approvers.every(value => /^U[A-Z0-9]+$/.test(value)) &&
+    Boolean(env.VERCEL_DEPLOY_GITHUB_TOKEN && env.VERCEL_DEPLOY_API_TOKEN &&
+      env.SLACK_SIGNING_SECRET && (env.APPROVAL_HMAC_SECRET?.length ?? 0) >= 32);
 }
 
 export function vercelDeployApproverAuthorized(userId: string, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -46,8 +48,9 @@ interface VercelProject {
 }
 
 function isExpectedGitSource(link: VercelProject['link']): boolean {
+  // GitHub repository ID for fragonh2-boop/Fornexa; immutable across renames.
   if (link?.type !== 'github' || String(link.repoId) !== '1314167928' ||
-      (link.productionBranch && link.productionBranch !== 'main')) return false;
+      link.productionBranch !== 'main') return false;
   const repo = link.repo?.toLowerCase();
   const owner = link.org?.toLowerCase();
   return repo === `${OWNER}/${REPO}`.toLowerCase() ||
@@ -68,7 +71,8 @@ export async function triggerVercelDeploy(params: {
   const checks = await github.checks.listForRef({ owner: OWNER, repo: REPO, ref: params.head, per_page: 100 });
   if (checks.data.total_count >= 100) throw new Error('Check list may be incomplete');
   const valid = checks.data.check_runs.filter(c => c.name === 'validate' && c.app?.slug === 'github-actions');
-  if (valid.length !== 1 || valid[0].status !== 'completed' || valid[0].conclusion !== 'success') {
+  if (valid.length < 1 || valid.some(check =>
+    check.status !== 'completed' || check.conclusion !== 'success')) {
     throw new Error('Fornexa CI validate is not green on the requested SHA');
   }
 

@@ -6,7 +6,8 @@ The product site is `fragonh2-boop/Fornexa` on the Vercel team `Fornexasc`, proj
 
 1. Enable Slack **Interactivity & Shortcuts** with Request URL `https://fornexa-ai-reviewer-gemini.onrender.com/slack/interactions`. Slack signs the human button click; messages sent through a shared user token cannot forge that request.
 2. On the Gemini Render service only, configure a dedicated read-only GitHub token scoped to `fragonh2-boop/Fornexa` (`Contents: read`, `Checks: read`) as `VERCEL_DEPLOY_GITHUB_TOKEN`, plus a Vercel access token with access to the `Fornexasc` project as `VERCEL_DEPLOY_API_TOKEN`. Do not paste either value into Slack, source control or the model. The Vercel token may have wider team privileges than this code's fixed-project allowlist; protect and rotate it separately.
-3. Set `VERCEL_DEPLOY_APPROVER_SLACK_USER_IDS` to the human accounts allowed to press the approval button. Set `VERCEL_DEPLOY_ENABLED=true` only after independent exact-HEAD review, CI, identity and credentials are verified. The feature is disabled by default.
+3. Generate `APPROVAL_HMAC_SECRET` independently from `SLACK_SIGNING_SECRET`; keep it only on the service. It signs approval payloads and is never shared with Slack.
+4. Set `VERCEL_DEPLOY_APPROVER_SLACK_USER_IDS` to the human accounts allowed to press the approval button. Set `VERCEL_DEPLOY_ENABLED=true` only after independent exact-HEAD review, CI, identity and credentials are verified. The feature is disabled by default.
 
 The product's existing Git integration may automatically deploy commits pushed to `main`; this command is useful for an explicit recovery or a missed build. Avoid a redundant deployment when the current production deployment already carries the requested SHA.
 

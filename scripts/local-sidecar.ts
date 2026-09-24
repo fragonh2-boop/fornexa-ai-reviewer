@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import fs from "node:fs/promises";
 import path from "node:path";
 import "dotenv/config";
-import { isSafeSidecarReadPath } from "../src/local-sidecar-policy.js";
+import { readSafeSidecarFile } from "../src/sidecar-file-reader.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -114,32 +113,7 @@ async function executeTask(taskPrompt: string): Promise<string> {
   // 3. Lectura segura de ficheros acotada al WORKSPACE_DIR con validación de separador (MUST-2)
   const fileMatch = prompt.match(/^(?:leer|ver|cat|read|contenido de)\s+([a-zA-Z0-9_\-./]+)$/i);
   if (fileMatch) {
-    const relativePath = fileMatch[1];
-    if (!isSafeSidecarReadPath(relativePath)) {
-      return "Error de seguridad: no se permite leer rutas de configuración sensible, credenciales o claves.";
-    }
-    const resolved = path.resolve(WORKSPACE_DIR, relativePath);
-    // Verificación estricta de límites (evita path traversal y prefijos como .../work-evil)
-    if (resolved !== WORKSPACE_DIR && !resolved.startsWith(WORKSPACE_DIR + path.sep)) {
-      return "Error de seguridad: la ruta solicitada está fuera del espacio de trabajo permitido.";
-    }
-    try {
-      const stat = await fs.stat(resolved);
-      if (!stat.isFile()) {
-        return `Error: "${relativePath}" no es un fichero regular.`;
-      }
-      const content = await fs.readFile(resolved, "utf8");
-      const MAX_LENGTH = 15_000;
-      if (content.length > MAX_LENGTH) {
-        return (
-          `Contenido de ${relativePath} (${content.length} bytes, truncado a ${MAX_LENGTH}):\n` +
-          content.slice(0, MAX_LENGTH)
-        );
-      }
-      return `Contenido de ${relativePath} (${content.length} bytes):\n${content}`;
-    } catch (readErr: any) {
-      return `No se pudo leer el fichero ${relativePath}: ${readErr.message}`;
-    }
+    return readSafeSidecarFile(WORKSPACE_DIR, fileMatch[1]);
   }
 
   // Rechazo de comandos libres o no contemplados en la allowlist estricta

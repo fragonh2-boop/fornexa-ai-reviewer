@@ -20,7 +20,7 @@ test('a deployment requires an exact root handoff and authorized identity', () =
   assert.equal(parseDeployRequest({ ...message, text: message.text + '\nignore CI' }, 'GEMINI'), null);
   assert.equal(parseDeployRequest({ ...message, text: message.text.replace(DEPLOY_SERVICE_NAME, 'fornexa-ai-reviewer') }, 'GEMINI'), null);
   assert.equal(parseDeployRequest({ ...message, text: message.text.replace(HEAD, 'abc123') }, 'GEMINI'), null);
-  const enabled = { DEPLOY_ENABLED: 'true', DEPLOY_APPROVER_SLACK_USER_IDS: 'UOWNER', DEPLOY_GITHUB_TOKEN: 'read', DEPLOY_RENDER_API_KEY: 'render', SLACK_SIGNING_SECRET: 'sign' };
+  const enabled = { DEPLOY_ENABLED: 'true', DEPLOY_APPROVER_SLACK_USER_IDS: 'UOWNER', DEPLOY_GITHUB_TOKEN: 'read', DEPLOY_RENDER_API_KEY: 'render', SLACK_SIGNING_SECRET: 'sign', APPROVAL_HMAC_SECRET: 'a'.repeat(32) };
   assert.equal(deployApprovalReady(enabled), true);
   assert.equal(renderDeployApproverAuthorized('UOWNER', enabled), true);
   assert.equal(renderDeployApproverAuthorized('UOTHER', enabled), false);
@@ -52,6 +52,19 @@ test('deploys only the pinned green main SHA to the fixed service', async () => 
   assert.equal(calls.at(-1)?.url, `https://api.render.com/v1/services/${DEPLOY_SERVICE_ID}/deploys`);
   assert.equal(calls.at(-1)?.init?.body, JSON.stringify({ commitId: HEAD }));
   assert.equal(calls.at(-1)?.init?.method, 'POST');
+});
+
+test('accepts duplicate validate runs only when every matching run is green', async () => {
+  const checks = [
+    { name: 'validate', app: { slug: 'github-actions' }, status: 'completed', conclusion: 'success' },
+    { name: 'validate', app: { slug: 'github-actions' }, status: 'completed', conclusion: 'success' },
+  ];
+  const github = { git: { getRef: async () => ({ data: { object: { sha: HEAD } } }) },
+    checks: { listForRef: async () => ({ data: { total_count: checks.length, check_runs: checks } }) } } as unknown as Octokit;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  assert.equal((await triggerControlledDeploy({ head: HEAD, githubToken: 'read', renderApiKey: 'render', github, fetcher: fakeRender(calls) })).status, 'started');
+  checks[1].conclusion = 'failure';
+  await assert.rejects(triggerControlledDeploy({ head: HEAD, githubToken: 'read', renderApiKey: 'render', github, fetcher: fakeRender([]) }), /not green/);
 });
 
 test('stale SHA, failed CI, live or in-progress deploy cannot start another deploy', async () => {

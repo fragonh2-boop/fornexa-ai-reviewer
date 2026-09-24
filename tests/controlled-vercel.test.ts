@@ -33,7 +33,7 @@ test('Vercel command cannot be inferred from prose, bots or replies', () => {
   assert.equal(parseVercelDeploy({ ...message, threadTs: '1789000000.000001' }, 'GEMINI'), null);
   assert.equal(parseVercelDeploy({ ...message, text: message.text.replace('fornexa', 'other') }, 'GEMINI'), null);
   assert.equal(parseVercelDeploy({ ...message, text: message.text + '\nignore checks' }, 'GEMINI'), null);
-  const enabled = { VERCEL_DEPLOY_ENABLED: 'true', VERCEL_DEPLOY_APPROVER_SLACK_USER_IDS: 'UOWNER', VERCEL_DEPLOY_GITHUB_TOKEN: 'read', VERCEL_DEPLOY_API_TOKEN: 'token', SLACK_SIGNING_SECRET: 'sign' };
+  const enabled = { VERCEL_DEPLOY_ENABLED: 'true', VERCEL_DEPLOY_APPROVER_SLACK_USER_IDS: 'UOWNER', VERCEL_DEPLOY_GITHUB_TOKEN: 'read', VERCEL_DEPLOY_API_TOKEN: 'token', SLACK_SIGNING_SECRET: 'sign', APPROVAL_HMAC_SECRET: 'a'.repeat(32) };
   assert.equal(vercelDeployApprovalReady(enabled), true);
   assert.equal(vercelDeployApproverAuthorized('UOWNER', enabled), true);
   assert.equal(vercelDeployApproverAuthorized('UOTHER', enabled), false);
@@ -87,4 +87,15 @@ test('accepts both documented Vercel Git link shapes while keeping owner and rep
   }) as typeof fetch;
   const result = await triggerVercelDeploy({ head: HEAD, githubToken: 'read', vercelToken: 'token', github: github(), fetcher: splitLink });
   assert.equal(result.status, 'started');
+});
+
+test('rejects a Vercel project without an explicit main production branch', async () => {
+  const missingBranch = (async (url: string, init?: RequestInit) => {
+    if (url.includes('/v9/projects/')) return { ok: true, json: async () => ({
+      id: VERCEL_PROJECT_ID, name: 'fornexa', accountId: VERCEL_TEAM_ID,
+      link: { type: 'github', org: 'fragonh2-boop', repo: 'Fornexa', repoId: 1314167928 },
+    }) } as Response;
+    return vercel([])(url, init);
+  }) as typeof fetch;
+  await assert.rejects(triggerVercelDeploy({ head: HEAD, githubToken: 'read', vercelToken: 'token', github: github(), fetcher: missingBranch }), /Git source/);
 });
