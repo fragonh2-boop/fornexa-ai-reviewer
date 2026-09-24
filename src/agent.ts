@@ -9,7 +9,6 @@ import { ensureContextResponseMarker } from "./context-onboarding.js";
 import {
   getCurrentWeather,
   fetchWebContent,
-  sidecarManager,
 } from "./tools/external-services.js";
 
 export { extractFirstChoice, withTimeout } from "./reliability.js";
@@ -23,7 +22,7 @@ Reglas obligatorias:
 - Tienes herramientas para consultar servicios externos en tiempo real:
   • 'get_current_weather': Úsala SIEMPRE que pregunten por el tiempo, clima, temperatura o previsión en cualquier localidad o ciudad.
   • 'fetch_web_content': Úsala cuando se comparta un enlace web o se solicite leer una URL externa.
-  • 'query_local_antigravity': Úsala cuando el usuario pregunte por el estado de su entorno local en el Mac (ficheros locales, estado de git, ejecución de tests en local). Si el agente local está desconectado, informa amablemente de que la máquina está en reposo.
+- El acceso al entorno local no está disponible como herramienta conversacional. Si el usuario lo necesita, indícale que publique la orden explícita 'usa query_local_antigravity para …'; el servidor pedirá una aprobación humana firmada en Slack antes de ejecutar nada.
 - No inventes datos meteorológicos ni enlaces externos: consulta las herramientas correspondientes.
 - Si la petición exige revisar o implementar código en el repositorio central, pide el protocolo estructurado con target y HEAD exacto; no inventes resultados.
 - Para solicitar desplegar este servicio Gemini en Render, indica que la orden debe publicarla una persona autorizada como mensaje nuevo en #fornexa: GEMINI — ACCIÓN REQUERIDA, MODE: DEPLOY, TARGET: fornexa-ai-reviewer-gemini y HEAD: <SHA completo de main>, una línea por campo. El despliegue está disponible solo si su configuración de servidor está activa. No afirmes que se ha completado sin el estado Live y un health check.
@@ -173,24 +172,6 @@ export const conversationTools: ChatCompletionTool[] = [
       },
     },
   },
-  {
-    type: "function",
-    function: {
-      name: "query_local_antigravity",
-      description:
-        "Delega una tarea técnica o consulta de entorno al agente local de Antigravity que corre en el Mac de Fran (inspección de archivos locales, git status, ejecución de tests en local). Solo disponible cuando el Mac está activo con su sidecar conectado.",
-      parameters: {
-        type: "object",
-        properties: {
-          task: {
-            type: "string",
-            description: "Descripción detallada de la tarea a consultar o ejecutar en el Mac local",
-          },
-        },
-        required: ["task"],
-      },
-    },
-  },
 ];
 
 export async function answerSlackConversation(
@@ -210,13 +191,6 @@ export async function answerSlackConversation(
       execute: async (args) => {
         const url = typeof args.url === "string" ? args.url : "";
         return fetchWebContent({ url });
-      },
-    },
-    {
-      definition: conversationTools[2],
-      execute: async (args) => {
-        const task = typeof args.task === "string" ? args.task : "";
-        return sidecarManager.dispatchTask(task);
       },
     },
   ];
