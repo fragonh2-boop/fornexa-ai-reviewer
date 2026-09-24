@@ -307,7 +307,7 @@ async function processSlackMention(
       botUserId: config.slack.mentions.botUserId,
       agentLabel: config.slack.agentLabel,
     });
-    const response = await answerSlackConversation(conversation);
+    const response = await answerSlackConversation(conversation, { threadTs: turn.threadTs });
     if (!ownsLock(inFlightMentions, key, lock.startedAt)) return false;
     await postToThread(
       formatMentionResponseParts(config.slack.agentLabel, turn.ts, response),
