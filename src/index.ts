@@ -36,6 +36,7 @@ import {
 import type { ReviewRequest } from "./review-request.js";
 import {
   buildContextFromThread,
+  containsPotentialSecret,
   contextAuthorKey,
   CONTEXT_MARKER,
   CONTEXT_RESPONSE_MARKER,
@@ -319,11 +320,15 @@ async function processSlackMention(
     return true;
   } catch (err) {
     if (ownsLock(inFlightMentions, key, lock.startedAt)) {
+      const rawError = (err as Error)?.message || String(err);
+      const safeError = containsPotentialSecret(rawError)
+        ? "error del proveedor"
+        : rawError.replace(/\s+/g, " ").trim().slice(0, 300);
       await postToThread(
         formatMentionFailure(
           config.slack.agentLabel,
           turn.ts,
-          "No se ha podido completar la consulta. Vuelve a mencionar al bot para reintentarlo."
+          `No se ha podido completar la consulta: ${safeError}. Vuelve a mencionar al bot para reintentarlo.`
         ),
         turn.threadTs
       );
@@ -522,7 +527,9 @@ function startHttpServer(): void {
           ? "Slack Events + polling de respaldo"
           : "polling";
         res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end(`fornexa-ai-reviewer: vivo, modo ${mode}.\n`);
+        res.end(
+          `fornexa-ai-reviewer: vivo, provider=${config.model.provider}, model=${config.model.name}, modo ${mode}.\n`
+        );
         return;
       }
 

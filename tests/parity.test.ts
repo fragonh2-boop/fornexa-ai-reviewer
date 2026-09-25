@@ -35,6 +35,13 @@ for (const provider of Object.keys(endpoints) as ProviderName[]) {
       await assert.rejects(adapter.complete([],[]));
     }
   });
+  test(`${provider}: accepts uppercase STOP finish_reason from Gemini-like responses`, async () => {
+    const adapter = createAdapter(provider, 'test', 'model', 1000, async () => new Response(JSON.stringify({
+      choices: [{ finish_reason: 'STOP', message: { role: 'assistant', content: 'Respuesta en mayúsculas' } }]
+    }), { headers: { 'content-type': 'application/json' } }));
+    const msg = await adapter.complete([], []);
+    assert.equal(msg.content, 'Respuesta en mayúsculas');
+  });
 }
 test('round exhaustion cannot become a successful implementation', async () => {
   await assert.rejects(proposeImplementation({ complete: async () => ({role:'assistant', content:null, refusal:null, tool_calls:[{id:'a',type:'function',function:{name:'get_full_file',arguments:'{"path":"docs/a.md"}'}}]}) }, request, async () => 'data'), /budget exhausted/);

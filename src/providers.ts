@@ -18,8 +18,9 @@ export function createAdapter(provider: ProviderName, apiKey: string, model: str
       const result = await client.chat.completions.create({ model, messages,
         ...(tools.length ? { tools } : {}), max_tokens: 8192 });
       const choice = result.choices?.[0];
-      if (!choice || !['stop', 'tool_calls'].includes(choice.finish_reason)) {
-        throw new Error('Incomplete or rejected provider response');
+      const finishReason = choice?.finish_reason?.toLowerCase();
+      if (!choice || !['stop', 'tool_calls'].includes(finishReason ?? '')) {
+        throw new Error(`Incomplete or rejected provider response (finish_reason: ${choice?.finish_reason ?? 'none'})`);
       }
       const message = choice.message;
       if (!message || (!message.content?.trim() && !message.tool_calls?.length)) throw new Error('Empty provider response');
