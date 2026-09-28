@@ -124,15 +124,19 @@ export function selectPendingMentionTurn(params: {
   channel: string;
   threadTs: string;
   messages: MentionSlackMessage[];
+  terminalMessages?: MentionSlackMessage[];
   botUserId: string;
   agentLabel: string;
 }): SlackMentionTurn | null {
   const { channel, threadTs, botUserId, agentLabel } = params;
   const messages = [...params.messages].sort((left, right) => left.ts.localeCompare(right.ts));
+  const terminalMessages = params.terminalMessages
+    ? [...messages, ...params.terminalMessages]
+    : messages;
   const root = messages.find((message) => message.ts === threadTs);
   if (!root || !isHuman(root) || !containsBotMention(root.text, botUserId)) return null;
 
-  const rootAnswered = messages.some((message) =>
+  const rootAnswered = terminalMessages.some((message) =>
     isMentionTerminalResponse(message, agentLabel, root.ts)
   );
   const candidates = mentionTurns(messages, root.ts)
@@ -140,7 +144,9 @@ export function selectPendingMentionTurn(params: {
     .slice(0, MAX_MENTION_TURNS);
 
   for (const message of candidates) {
-    if (messages.some((other) => isMentionTerminalResponse(other, agentLabel, message.ts))) {
+    if (terminalMessages.some((other) =>
+      isMentionTerminalResponse(other, agentLabel, message.ts)
+    )) {
       continue;
     }
     const parsed = parseMentionPrompt(message.text, botUserId);

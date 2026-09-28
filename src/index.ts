@@ -44,6 +44,7 @@ import {
   isContextThreadRoot,
 } from "./context-onboarding.js";
 import { acquireLock, ownsLock, releaseLock } from "./reliability.js";
+import { isCannotReplyToMessageError } from "./slack-errors.js";
 import {
   buildMentionConversation,
   containsBotMention,
@@ -63,6 +64,7 @@ const MAX_REMEMBERED_EVENT_IDS = 1000;
 const inFlightReviews = new Map<string, number>();
 const inFlightContextThreads = new Map<string, number>();
 const inFlightMentions = new Map<string, number>();
+const nonReplyableMentionRequestTs = new Set<string>();
 const processedEventIds = new Set<string>();
 const botAllowlistOptions = {
   allowedBotIds: config.slack.allowedBotIds,
@@ -87,6 +89,31 @@ function rememberEvent(eventId: string): boolean {
   }
 
   return true;
+}
+
+function rememberNonReplyableMention(requestTs: string): void {
+  nonReplyableMentionRequestTs.add(requestTs);
+  if (nonReplyableMentionRequestTs.size > MAX_REMEMBERED_EVENT_IDS) {
+    const oldest = nonReplyableMentionRequestTs.values().next().value;
+    if (oldest) nonReplyableMentionRequestTs.delete(oldest);
+  }
+}
+
+async function publishNonReplyableMentionFailure(
+  turn: SlackMentionTurn,
+  detail: string
+): Promise<void> {
+  const message = `${formatMentionFailure(
+    config.slack.agentLabel,
+    turn.ts,
+    detail
+  )}\n\nTHREAD_TS: ${turn.threadTs}\n_Respuesta publicada en el canal porque Slack no admite respuestas en ese mensaje._`;
+  await postToChannel(message);
+  rememberNonReplyableMention(turn.ts);
+  console.warn(
+    `[${new Date().toISOString()}] Slack no permite responder al hilo ${turn.threadTs}; ` +
+      `la solicitud ${turn.ts} quedó cerrada en el canal.`
+  );
 }
 
 async function processReviewRequest(request: ReviewRequest): Promise<void> {
@@ -290,6 +317,7 @@ async function processSlackMention(
   }
 
   const key = `mention:${turn.ts}`;
+  if (nonReplyableMentionRequestTs.has(turn.ts)) return false;
   const lock = acquireLock(inFlightMentions, key, staleLockMs);
   if (!lock.acquired) return false;
 
@@ -324,14 +352,25 @@ async function processSlackMention(
       const safeError = containsPotentialSecret(rawError)
         ? "error del proveedor"
         : rawError.replace(/\s+/g, " ").trim().slice(0, 300);
-      await postToThread(
-        formatMentionFailure(
-          config.slack.agentLabel,
-          turn.ts,
-          `No se ha podido completar la consulta: ${safeError}. Vuelve a mencionar al bot para reintentarlo.`
-        ),
-        turn.threadTs
-      );
+      const detail = `No se ha podido completar la consulta: ${safeError}. Vuelve a mencionar al bot para reintentarlo.`;
+      if (isCannotReplyToMessageError(err)) {
+        await publishNonReplyableMentionFailure(turn, detail);
+        return true;
+      }
+      try {
+        await postToThread(
+          formatMentionFailure(config.slack.agentLabel, turn.ts, detail),
+          turn.threadTs
+        );
+      } catch (notificationError) {
+        if (!isCannotReplyToMessageError(notificationError)) throw notificationError;
+        await publishNonReplyableMentionFailure(turn, detail);
+        console.error(
+          `[${new Date().toISOString()}] La consulta ${turn.ts} falló antes del fallback de Slack:`,
+          err
+        );
+        return true;
+      }
     }
     throw err;
   } finally {
@@ -361,10 +400,11 @@ async function findPendingMention(messages: SlackMessage[]): Promise<{
       channel: config.slack.channelId,
       threadTs: root.ts,
       messages: thread,
+      terminalMessages: messages,
       botUserId: config.slack.mentions.botUserId,
       agentLabel: config.slack.agentLabel,
     });
-    if (turn) return { turn, thread };
+    if (turn && !nonReplyableMentionRequestTs.has(turn.ts)) return { turn, thread };
   }
   return null;
 }
