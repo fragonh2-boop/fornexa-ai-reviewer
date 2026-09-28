@@ -102,6 +102,58 @@ test("cada mensaje queda cerrado únicamente por una respuesta terminal con su t
   assert.equal(isMentionTerminalResponse({ ...success, botId: undefined }, "CLAUDE", "1000.1"), false);
 });
 
+test("un cierre publicado fuera del hilo evita reintentar una mención no respondible", () => {
+  const root = {
+    ts: "1000.1",
+    text: `<@${botUserId}> responde`,
+    user: "UFRAN",
+  };
+  const channelFallback = {
+    ts: "1000.2",
+    botId: "B-GEMINI",
+    text: `${formatMentionFailure("GEMINI", root.ts, "Slack no admite respuestas en ese mensaje.")}\n\nTHREAD_TS: ${root.ts}`,
+  };
+
+  const turn = selectPendingMentionTurn({
+    channel,
+    threadTs: root.ts,
+    messages: [root],
+    terminalMessages: [channelFallback],
+    botUserId,
+    agentLabel: "GEMINI",
+  });
+  assert.equal(turn, null);
+});
+
+test("los cierres del hilo se conservan al añadir cierres globales del canal", () => {
+  const root = {
+    ts: "1000.1",
+    text: `<@${botUserId}> responde`,
+    user: "UFRAN",
+  };
+  const answer = {
+    ts: "1000.2",
+    threadTs: root.ts,
+    botId: "B-GEMINI",
+    text: formatMentionResponse("GEMINI", root.ts, "hecho"),
+  };
+  const unrelatedChannelMarker = {
+    ts: "1000.3",
+    botId: "B-GEMINI",
+    text: formatMentionFailure("GEMINI", "999.9", "otro hilo"),
+  };
+
+  const turn = selectPendingMentionTurn({
+    channel,
+    threadTs: root.ts,
+    messages: [root, answer],
+    terminalMessages: [unrelatedChannelMarker],
+    botUserId,
+    agentLabel: "GEMINI",
+  });
+  assert.equal(turn, null);
+});
+
 test("un hilo dirigido a otra identidad no se procesa", () => {
   const turn = selectPendingMentionTurn({
     channel,
