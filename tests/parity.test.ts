@@ -43,6 +43,19 @@ for (const provider of Object.keys(endpoints) as ProviderName[]) {
     assert.equal(msg.content, 'Respuesta en mayúsculas');
   });
 }
+test('common adapter retries transient provider failures', async () => {
+  let calls = 0;
+  const adapter = createAdapter('gemini', 'test', 'model', 5000, async () => {
+    calls += 1;
+    if (calls < 3) return new Response(null, { status: 503 });
+    return new Response(JSON.stringify({
+      choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }]
+    }), { headers: { 'content-type': 'application/json' } });
+  });
+  const message = await adapter.complete([], []);
+  assert.equal(message.content, 'ok');
+  assert.equal(calls, 3);
+});
 test('round exhaustion cannot become a successful implementation', async () => {
   await assert.rejects(proposeImplementation({ complete: async () => ({role:'assistant', content:null, refusal:null, tool_calls:[{id:'a',type:'function',function:{name:'get_full_file',arguments:'{"path":"docs/a.md"}'}}]}) }, request, async () => 'data'), /budget exhausted/);
 });

@@ -10,9 +10,16 @@ export const endpoints: Record<ProviderName, string> = {
   gemini: 'https://generativelanguage.googleapis.com/v1beta/openai',
   deepseek: 'https://api.deepseek.com',
 };
+const TRANSIENT_PROVIDER_RETRIES = 2;
 /** Shared function-calling transport; no repository permissions live in adapters. */
 export function createAdapter(provider: ProviderName, apiKey: string, model: string, timeout: number, fetch?: ClientOptions["fetch"]): ModelAdapter {
-  const client = new OpenAI({ apiKey, baseURL: endpoints[provider], timeout, maxRetries: 0, fetch });
+  const client = new OpenAI({
+    apiKey,
+    baseURL: endpoints[provider],
+    timeout,
+    maxRetries: TRANSIENT_PROVIDER_RETRIES,
+    fetch,
+  });
   return {
     async complete(messages, tools) {
       const result = await client.chat.completions.create({ model, messages,
