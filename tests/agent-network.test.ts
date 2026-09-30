@@ -54,6 +54,21 @@ test("MESH/1 binds sender label, Slack user and Slack bot identity", () => {
   });
   assert.equal(message?.sender.label, "GPT");
   assert.equal(message?.type, "PING");
+  assert.ok(extractAgentNetworkMessage({
+    envelope: { ...envelope, event: { ...envelope.event, subtype: "bot_message" } },
+    channelId: "CFORNEXA", localLabel: "CLAUDE", peers,
+  }), "Acepta el formato bot_message con user de Slack");
+  assert.ok(extractAgentNetworkMessage({
+    envelope: {
+      ...envelope,
+      event: { ...envelope.event, subtype: "bot_message", user: undefined },
+    },
+    channelId: "CFORNEXA", localLabel: "CLAUDE", peers,
+  }), "Acepta el formato bot_message de Slack que omite user, vinculado por bot_id");
+  assert.equal(extractAgentNetworkMessage({
+    envelope: { ...envelope, event: { ...envelope.event, subtype: "message_changed" } },
+    channelId: "CFORNEXA", localLabel: "CLAUDE", peers,
+  }), null);
   assert.equal(extractAgentNetworkMessage({
     envelope: { ...envelope, event: { ...envelope.event, bot_id: "BIMPOSTER" } },
     channelId: "CFORNEXA", localLabel: "CLAUDE", peers,

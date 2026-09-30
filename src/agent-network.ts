@@ -3,6 +3,10 @@ import type { SlackEventsEnvelope } from "./slack-events.js";
 const LABEL = /^[A-Z][A-Z0-9_-]{1,30}$/;
 const TRACE = /^[A-Z0-9][A-Z0-9._-]{7,79}$/;
 
+export function isAgentNetworkLabel(value: string): boolean {
+  return LABEL.test(value);
+}
+
 export type AgentNetworkType = "PING" | "ACK";
 
 export interface AgentNetworkPeer {
@@ -40,7 +44,7 @@ export function parseAgentNetworkPeers(raw: string | undefined): AgentNetworkPee
     const parts = entry.trim().split(":");
     if (parts.length !== 3) throw new Error("SLACK_AGENT_NETWORK_PEERS debe usar LABEL:U…:B…");
     const [label, userId, botId] = parts;
-    if (!LABEL.test(label) || !/^U[A-Z0-9]+$/.test(userId) || !/^B[A-Z0-9]+$/.test(botId)) {
+    if (!isAgentNetworkLabel(label) || !/^U[A-Z0-9]+$/.test(userId) || !/^B[A-Z0-9]+$/.test(botId)) {
       throw new Error("SLACK_AGENT_NETWORK_PEERS contiene una identidad no válida");
     }
     return { label, userId, botId };
@@ -79,8 +83,8 @@ export function parseAgentNetworkMessage(text: string): ParsedAgentNetworkMessag
   if (
     (type !== "PING" && type !== "ACK") ||
     !traceId || !TRACE.test(traceId) ||
-    !from || !LABEL.test(from) ||
-    !to || !LABEL.test(to) ||
+    !from || !isAgentNetworkLabel(from) ||
+    !to || !isAgentNetworkLabel(to) ||
     !hop || !/^(?:0|1)$/.test(hop) ||
     maxHops !== "1"
   ) {
@@ -95,7 +99,7 @@ export function parseAgentNetworkMessage(text: string): ParsedAgentNetworkMessag
 }
 
 export function formatAgentNetworkMessage(message: Omit<ParsedAgentNetworkMessage, "maxHops">): string {
-  if (!LABEL.test(message.from) || !LABEL.test(message.to) || !TRACE.test(message.traceId)) {
+  if (!isAgentNetworkLabel(message.from) || !isAgentNetworkLabel(message.to) || !TRACE.test(message.traceId)) {
     throw new Error("MESH/1 requiere etiquetas y trace válidos");
   }
   if ((message.type === "PING" && message.hop !== 0) || (message.type === "ACK" && message.hop !== 1)) {
@@ -113,7 +117,7 @@ export function formatAgentNetworkMessage(message: Omit<ParsedAgentNetworkMessag
 }
 
 export function buildAgentNetworkAck(message: AgentNetworkMessage, localLabel: string): string {
-  if (message.type !== "PING" || message.hop !== 0 || !LABEL.test(localLabel)) {
+  if (message.type !== "PING" || message.hop !== 0 || !isAgentNetworkLabel(localLabel)) {
     throw new Error("Solo un PING MESH/1 válido puede recibir ACK");
   }
   return formatAgentNetworkMessage({
@@ -133,14 +137,17 @@ export function extractAgentNetworkMessage(params: {
 }): AgentNetworkMessage | null {
   const { envelope, channelId, localLabel, peers } = params;
   const event = envelope.event;
+  const isBotMessage = event?.subtype === "bot_message";
   if (
     envelope.type !== "event_callback" ||
     !event ||
     event.type !== "message" ||
-    event.subtype ||
+    (event.subtype !== undefined && !isBotMessage) ||
     event.channel !== channelId ||
     !event.bot_id ||
-    !event.user ||
+    // Slack's bot_message event omits user for some bot deliveries. In that
+    // documented form, the workspace-signed bot_id remains the identity key.
+    (!event.user && !isBotMessage) ||
     !event.ts ||
     typeof event.text !== "string"
   ) {
@@ -152,7 +159,10 @@ export function extractAgentNetworkMessage(params: {
   if (parsed.type === "PING" && event.thread_ts && event.thread_ts !== event.ts) return null;
 
   const sender = peers.find(
-    (peer) => peer.label === parsed.from && peer.userId === event.user && peer.botId === event.bot_id
+    (peer) =>
+      peer.label === parsed.from &&
+      peer.botId === event.bot_id &&
+      (event.user === undefined || peer.userId === event.user)
   );
   if (!sender) return null;
 

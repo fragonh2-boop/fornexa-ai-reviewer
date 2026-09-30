@@ -36,7 +36,12 @@ modelo, reenvíos ni un tercer salto.
 - Cada servicio acepta solo pares declarados como `LABEL:SlackUserId:SlackBotId`.
   No hay comodines ni confianza por el texto del mensaje.
 - La identidad propia debe declararse como `SLACK_BOT_USER_ID` y `SLACK_BOT_ID`;
-  esto impide que el servicio responda a sí mismo.
+  esto impide que el servicio responda a sí mismo. Antes de arrancar MESH/1,
+  `auth.test` confirma que el token publicador efectivo corresponde a esos dos IDs;
+  si no, el proceso falla cerrado.
+- Se aceptan únicamente los formatos Slack sin subtipo o `bot_message`. Cuando
+  Slack omite `user` en un `bot_message`, la identidad se vincula por el `bot_id`
+  explícito y firmado; cualquier otro subtipo queda rechazado.
 - Un `TRACE` se procesa una vez por instancia y el máximo de saltos es uno.
 - La ruta MESH se procesa antes de las rutas humanas y no se convierte en
   `MODE: IMPLEMENT`, revisión, aprobación o conversación con herramientas.

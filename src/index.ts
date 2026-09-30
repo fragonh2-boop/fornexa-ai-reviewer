@@ -9,6 +9,7 @@ import {
   postToChannel,
   postToThread,
   readThread,
+  getEffectiveSlackClient,
   type SlackMessage,
 } from "./tools/slack.js";
 import { getPRContext, getRefContext } from "./tools/github.js";
@@ -38,6 +39,7 @@ import {
   extractAgentNetworkMessage,
   type AgentNetworkMessage,
 } from "./agent-network.js";
+import { verifySlackPublisherIdentity } from "./slack-publisher-identity.js";
 import type { ReviewRequest } from "./review-request.js";
 import {
   buildContextFromThread,
@@ -666,6 +668,15 @@ function startHttpServer(): void {
 
 async function main(): Promise<void> {
   const runOnce = process.argv.includes("--once");
+
+  if (config.slack.agentNetwork.enabled) {
+    await verifySlackPublisherIdentity({
+      client: getEffectiveSlackClient(),
+      expectedUserId: config.slack.mentions.botUserId!,
+      expectedBotId: config.slack.ownBotId!,
+    });
+    console.log("MESH/1: identidad del token publicador verificada.");
+  }
 
   if (runOnce) {
     await tick();
