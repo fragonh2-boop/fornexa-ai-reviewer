@@ -33,6 +33,11 @@ import {
   type SlackHumanMessageEvent,
   verifySlackSignature,
 } from "./slack-events.js";
+import {
+  buildAgentNetworkAck,
+  extractAgentNetworkMessage,
+  type AgentNetworkMessage,
+} from "./agent-network.js";
 import type { ReviewRequest } from "./review-request.js";
 import {
   buildContextFromThread,
@@ -66,16 +71,11 @@ const inFlightContextThreads = new Map<string, number>();
 const inFlightMentions = new Map<string, number>();
 const nonReplyableMentionRequestTs = new Set<string>();
 const processedEventIds = new Set<string>();
-const botAllowlistOptions = {
-  allowedBotIds: config.slack.allowedBotIds,
-  ownBotId: config.slack.ownBotId,
-  ownUserId: config.slack.mentions.botUserId,
-};
+const processedAgentNetworkTraces = new Set<string>();
 const reportMalformed = createDiagnosticReporter(
   config.slack.agentLabel,
   postToThread,
-  Date.now,
-  botAllowlistOptions
+  Date.now
 );
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
 
@@ -89,6 +89,37 @@ function rememberEvent(eventId: string): boolean {
   }
 
   return true;
+}
+
+function rememberAgentNetworkTrace(traceId: string): boolean {
+  if (processedAgentNetworkTraces.has(traceId)) return false;
+  processedAgentNetworkTraces.add(traceId);
+
+  if (processedAgentNetworkTraces.size > MAX_REMEMBERED_EVENT_IDS) {
+    const oldest = processedAgentNetworkTraces.values().next().value;
+    if (oldest) processedAgentNetworkTraces.delete(oldest);
+  }
+
+  return true;
+}
+
+async function processAgentNetworkMessage(message: AgentNetworkMessage): Promise<void> {
+  if (!rememberAgentNetworkTrace(message.traceId)) {
+    console.log(`[${new Date().toISOString()}] MESH/1 duplicado ${message.traceId}; se omite.`);
+    return;
+  }
+
+  if (message.type === "ACK") {
+    console.log(
+      `[${new Date().toISOString()}] MESH/1 ACK ${message.traceId} de ${message.from} recibido por ${config.slack.agentLabel}.`
+    );
+    return;
+  }
+
+  await postToThread(buildAgentNetworkAck(message, config.slack.agentLabel), message.threadTs ?? message.ts);
+  console.log(
+    `[${new Date().toISOString()}] MESH/1 PING ${message.traceId} de ${message.from} confirmado por ${config.slack.agentLabel}.`
+  );
 }
 
 function rememberNonReplyableMention(requestTs: string): void {
@@ -425,9 +456,10 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
   if (!supportsLegacyOnboarding(config.model.provider)) return null;
   const roots = messages.filter(
     (message) =>
+      !message.botId &&
+      Boolean(message.user) &&
       message.text.startsWith(CONTEXT_MARKER) &&
-      isContextThreadRoot(message) &&
-      contextAuthorKey(message) !== null
+      isContextThreadRoot(message)
   );
 
   for (const root of roots) {
@@ -443,10 +475,11 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
 async function tick(): Promise<void> {
   const messages = await readRecentHistory();
   for (const message of messages) {
+    if (message.botId) continue;
     if (await reportMalformed(message)) continue;
     if (await processImplementation(message)) break;
   }
-  const pending = findPendingHandoff(messages, config.slack.agentLabel, botAllowlistOptions);
+  const pending = findPendingHandoff(messages, config.slack.agentLabel);
 
   if (pending) {
     await processReviewRequest(pending);
@@ -516,7 +549,24 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   sendJson(res, 200, { ok: true });
 
   if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
-  const humanMessage = extractHumanMessage(envelope, config.slack.channelId, botAllowlistOptions);
+  if (config.slack.agentNetwork.enabled) {
+    const networkMessage = extractAgentNetworkMessage({
+      envelope,
+      channelId: config.slack.channelId,
+      localLabel: config.slack.agentLabel,
+      peers: config.slack.agentNetwork.peers,
+    });
+    if (networkMessage) {
+      setImmediate(() => {
+        processAgentNetworkMessage(networkMessage).catch((err) =>
+          console.error("Error procesando MESH/1:", err)
+        );
+      });
+      return;
+    }
+  }
+
+  const humanMessage = extractHumanMessage(envelope, config.slack.channelId);
   if (humanMessage && await reportMalformed(humanMessage)) return;
   if (humanMessage && /^MODE:\s*IMPLEMENT\s*$/m.test(humanMessage.text)) {
     setImmediate(() => { processImplementation(humanMessage).catch(() => console.error('Implementation failed; checkpoint retained')); });
@@ -535,8 +585,7 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   const request = extractReviewRequest(
     envelope,
     config.slack.channelId,
-    config.slack.agentLabel,
-    botAllowlistOptions
+    config.slack.agentLabel
   );
   if (request) {
     setImmediate(() => {

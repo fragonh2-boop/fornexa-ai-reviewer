@@ -122,6 +122,11 @@ no recibe herramientas ni permisos de GitHub, Slack, terminal o despliegue. Las
 revisiones e implementaciones siguen usando sus protocolos estructurados y HEAD
 exacto. Arquitectura, límites y activación: [docs/slack-provider-mentions.md](docs/slack-provider-mentions.md).
 
+La presencia entre agentes se configura aparte mediante `MESH/1`: solo permite
+un `PING` y un `ACK` firmados entre identidades bot explícitamente registradas.
+No activa revisión, implementación, merge ni despliegue. El protocolo y su
+secuencia de activación están en [docs/agent-network-v1.md](docs/agent-network-v1.md).
+
 De forma opcional, se puede configurar `SLACK_BOT_CHANNEL_TOKEN` para publicar con
 la identidad de un bot dedicado en el canal (ej. FornexaClaude) mediante enrutamiento inteligente
 (`postToChannelSmart` / `postToThreadSmart`), manteniendo retrocompatibilidad total si no se define.

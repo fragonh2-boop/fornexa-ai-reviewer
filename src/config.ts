@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { endpoints, type ProviderName } from "./providers.js";
+import { parseAgentNetworkPeers } from "./agent-network.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -38,6 +39,15 @@ const botUserId = process.env.SLACK_BOT_USER_ID?.trim() || null;
 if (mentionsEnabled && !/^U[A-Z0-9]+$/.test(botUserId ?? "")) {
   throw new Error("SLACK_BOT_USER_ID debe contener el ID U… de la identidad de este bot.");
 }
+const agentNetworkEnabled = booleanValue("SLACK_AGENT_NETWORK_ENABLED", false);
+const agentNetworkPeers = parseAgentNetworkPeers(process.env.SLACK_AGENT_NETWORK_PEERS);
+const ownBotId = process.env.SLACK_BOT_ID?.trim() || null;
+if (agentNetworkEnabled && (!/^U[A-Z0-9]+$/.test(botUserId ?? "") || !/^B[A-Z0-9]+$/.test(ownBotId ?? ""))) {
+  throw new Error("MESH/1 exige SLACK_BOT_USER_ID y SLACK_BOT_ID de la identidad propia.");
+}
+if (agentNetworkEnabled && agentNetworkPeers.length === 0) {
+  throw new Error("MESH/1 exige pares explícitos en SLACK_AGENT_NETWORK_PEERS.");
+}
 export const config = {
   model: { provider, apiKey: required(`${prefix}_API_KEY`),
     name: process.env[`${prefix}_MODEL`] ?? (provider === 'deepseek' ? 'deepseek-v4-pro' : required(`${prefix}_MODEL`)),
@@ -52,11 +62,11 @@ export const config = {
       botUserId,
     },
     botChannelToken: process.env.SLACK_BOT_CHANNEL_TOKEN?.trim() || null,
-    allowedBotIds: (process.env.SLACK_ALLOWED_BOT_IDS ?? "")
-      .split(",")
-      .map((id) => id.trim())
-      .filter(Boolean),
-    ownBotId: process.env.SLACK_BOT_ID?.trim() || null,
+    agentNetwork: {
+      enabled: agentNetworkEnabled,
+      peers: agentNetworkPeers,
+    },
+    ownBotId,
   },
   github: {
     token: required("GITHUB_TOKEN"),
