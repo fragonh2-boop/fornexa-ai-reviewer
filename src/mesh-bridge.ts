@@ -47,6 +47,7 @@ export type MeshInboundResult = "ignored" | "acknowledged" | "ack_received";
 export class MeshBridge {
   private readonly processedInboundTraces = new Set<string>();
   private readonly inFlightInboundTraces = new Map<string, Promise<void>>();
+  private readonly inFlightOutboundPeers = new Set<string>();
   private readonly pendingPings = new Map<string, PendingPing>();
   private readonly lastOutboundPingAt = new Map<string, number>();
 
@@ -135,29 +136,37 @@ export class MeshBridge {
     if ([...this.pendingPings.values()].some((pending) => pending.to === peer.label)) {
       throw new MeshBridgeError("ping_rate_limited", "Ya hay un PING MESH/1 pendiente para este par.");
     }
+    if (this.inFlightOutboundPeers.has(peer.label)) {
+      throw new MeshBridgeError("ping_rate_limited", "Ya hay un PING MESH/1 en envío para este par.");
+    }
     const lastPingAt = this.lastOutboundPingAt.get(peer.label);
     if (lastPingAt !== undefined && this.now() - lastPingAt < PING_COOLDOWN_MS) {
       throw new MeshBridgeError("ping_rate_limited", "El límite de PING MESH/1 para este par sigue activo.");
     }
 
-    const traceId = `MESH-${randomUUID().toUpperCase()}`;
-    const text = formatAgentNetworkMessage({
-      type: "PING",
-      traceId,
-      from: this.config.localLabel,
-      to: peer.label,
-      hop: 0,
-    });
-    const result = await this.publisher.postToChannel(text);
-    if (!result.ts) throw new Error("Slack no devolvió el timestamp del PING MESH/1.");
+    this.inFlightOutboundPeers.add(peer.label);
+    try {
+      const traceId = `MESH-${randomUUID().toUpperCase()}`;
+      const text = formatAgentNetworkMessage({
+        type: "PING",
+        traceId,
+        from: this.config.localLabel,
+        to: peer.label,
+        hop: 0,
+      });
+      const result = await this.publisher.postToChannel(text);
+      if (!result.ts) throw new Error("Slack no devolvió el timestamp del PING MESH/1.");
 
-    this.pendingPings.set(traceId, {
-      to: peer.label,
-      rootTs: result.ts,
-      createdAt: this.now(),
-    });
-    this.lastOutboundPingAt.set(peer.label, this.now());
-    return { traceId, rootTs: result.ts };
+      this.pendingPings.set(traceId, {
+        to: peer.label,
+        rootTs: result.ts,
+        createdAt: this.now(),
+      });
+      this.lastOutboundPingAt.set(peer.label, this.now());
+      return { traceId, rootTs: result.ts };
+    } finally {
+      this.inFlightOutboundPeers.delete(peer.label);
+    }
   }
 
   pendingCount(): number {

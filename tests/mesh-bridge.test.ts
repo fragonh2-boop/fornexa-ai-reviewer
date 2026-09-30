@@ -108,3 +108,23 @@ test("outbound PINGs are bounded per peer while preserving a retryable ACK corre
   clock += 60_000;
   await bridge.ping("CLAUDE");
 });
+
+test("concurrent outbound PINGs reserve the peer before Slack publication", async () => {
+  let started!: () => void;
+  let finish!: (value: { ts: string }) => void;
+  const publicationStarted = new Promise<void>((resolve) => { started = resolve; });
+  const publication = new Promise<{ ts: string }>((resolve) => { finish = resolve; });
+  const publisher: MeshBridgePublisher = {
+    postToChannel: async () => {
+      started();
+      return publication;
+    },
+    postToThread: async () => undefined,
+  };
+  const bridge = new MeshBridge({ channelId: "CFORNEXA", localLabel: "GPT", peers }, publisher);
+  const first = bridge.ping("CLAUDE");
+  await publicationStarted;
+  await assert.rejects(bridge.ping("CLAUDE"), /en envío/);
+  finish({ ts: "400.001" });
+  await first;
+});
