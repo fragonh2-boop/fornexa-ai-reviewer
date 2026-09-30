@@ -9,7 +9,9 @@
     "build": "tsc -p tsconfig.json",
     "test": "tsx --test tests/**/*.test.ts",
     "start": "node dist/index.js",
+    "start:gpt-bridge": "node dist/fornexa-gpt-bridge.js",
     "dev": "tsx src/index.ts",
+    "dev:gpt-bridge": "tsx src/fornexa-gpt-bridge.ts",
     "run-once": "tsx src/index.ts --once"
   },
   "dependencies": {
