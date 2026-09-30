@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { endpoints, type ProviderName } from "./providers.js";
+import { isAgentNetworkLabel, parseAgentNetworkPeers } from "./agent-network.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -38,6 +39,24 @@ const botUserId = process.env.SLACK_BOT_USER_ID?.trim() || null;
 if (mentionsEnabled && !/^U[A-Z0-9]+$/.test(botUserId ?? "")) {
   throw new Error("SLACK_BOT_USER_ID debe contener el ID U… de la identidad de este bot.");
 }
+const agentNetworkEnabled = booleanValue("SLACK_AGENT_NETWORK_ENABLED", false);
+const agentNetworkPeers = parseAgentNetworkPeers(process.env.SLACK_AGENT_NETWORK_PEERS);
+const ownBotId = process.env.SLACK_BOT_ID?.trim() || null;
+const agentLabel = process.env.SLACK_AGENT_LABEL?.trim() || provider.toUpperCase();
+if (agentNetworkEnabled && (!/^U[A-Z0-9]+$/.test(botUserId ?? "") || !/^B[A-Z0-9]+$/.test(ownBotId ?? ""))) {
+  throw new Error("MESH/1 exige SLACK_BOT_USER_ID y SLACK_BOT_ID de la identidad propia.");
+}
+if (agentNetworkEnabled && agentNetworkPeers.length === 0) {
+  throw new Error("MESH/1 exige pares explícitos en SLACK_AGENT_NETWORK_PEERS.");
+}
+if (agentNetworkEnabled && !isAgentNetworkLabel(agentLabel)) {
+  throw new Error("MESH/1 exige un SLACK_AGENT_LABEL válido (A-Z, 2-31 caracteres).");
+}
+if (agentNetworkEnabled && agentNetworkPeers.some(
+  (peer) => peer.label === agentLabel || peer.userId === botUserId || peer.botId === ownBotId
+)) {
+  throw new Error("MESH/1 no admite que la identidad propia aparezca entre sus pares.");
+}
 export const config = {
   model: { provider, apiKey: required(`${prefix}_API_KEY`),
     name: process.env[`${prefix}_MODEL`] ?? (provider === 'deepseek' ? 'deepseek-v4-pro' : required(`${prefix}_MODEL`)),
@@ -45,18 +64,18 @@ export const config = {
   slack: {
     botToken: required("SLACK_BOT_TOKEN"),
     channelId: process.env.SLACK_CHANNEL_ID ?? "C0BT661FYLW",
-    agentLabel: process.env.SLACK_AGENT_LABEL ?? provider.toUpperCase(),
+    agentLabel,
     signingSecret: process.env.SLACK_SIGNING_SECRET?.trim() || null,
     mentions: {
       enabled: mentionsEnabled,
       botUserId,
     },
     botChannelToken: process.env.SLACK_BOT_CHANNEL_TOKEN?.trim() || null,
-    allowedBotIds: (process.env.SLACK_ALLOWED_BOT_IDS ?? "")
-      .split(",")
-      .map((id) => id.trim())
-      .filter(Boolean),
-    ownBotId: process.env.SLACK_BOT_ID?.trim() || null,
+    agentNetwork: {
+      enabled: agentNetworkEnabled,
+      peers: agentNetworkPeers,
+    },
+    ownBotId,
   },
   github: {
     token: required("GITHUB_TOKEN"),
