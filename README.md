@@ -126,6 +126,8 @@ La presencia entre agentes se configura aparte mediante `MESH/1`: solo permite
 un `PING` y un `ACK` firmados entre identidades bot explícitamente registradas.
 No activa revisión, implementación, merge ni despliegue. El protocolo y su
 secuencia de activación están en [docs/agent-network-v1.md](docs/agent-network-v1.md).
+El receptor/emisor de la identidad canónica FornexaGPT está separado del agente
+de revisión y se documenta en [docs/fornexa-gpt-bridge.md](docs/fornexa-gpt-bridge.md).
 
 De forma opcional, se puede configurar `SLACK_BOT_CHANNEL_TOKEN` para publicar con
 la identidad de un bot dedicado en el canal (ej. FornexaClaude) mediante enrutamiento inteligente
