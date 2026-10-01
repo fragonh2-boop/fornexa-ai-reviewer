@@ -3,12 +3,16 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { WebClient } from "@slack/web-api";
 import { isAgentNetworkLabel, parseAgentNetworkPeers, type AgentNetworkPeer } from "./agent-network.js";
 import { MeshBridge, MeshBridgeError, type MeshBridgePublisher } from "./mesh-bridge.js";
+import { reconcilePolledMesh, type PolledMeshMessage } from "./mesh-poll.js";
 import { parseSlackEnvelope, verifySlackSignature } from "./slack-events.js";
 import { verifySlackPublisherIdentity } from "./slack-publisher-identity.js";
 import { isMeshControlAuthorized, parseMeshPingTarget } from "./mesh-control.js";
 
 const DEFAULT_CHANNEL_ID = "C0BT661FYLW";
 const MAX_BODY_BYTES = 64 * 1024;
+const DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1_000;
+const MAX_MESH_ROOTS_PER_POLL = 20;
+const MAX_MESH_MESSAGES_PER_THREAD = 20;
 
 export interface FornexaGptBridgeConfig {
   enabled: boolean;
@@ -20,6 +24,23 @@ export interface FornexaGptBridgeConfig {
   botUserId: string | null;
   botId: string | null;
   controlToken: string | null;
+  pollIntervalMs: number;
+}
+
+export interface FornexaGptBridgeSlackClient {
+  conversations: {
+    history(options: { channel: string; limit: number }): Promise<{ messages?: SlackApiMessage[] }>;
+    replies(options: { channel: string; ts: string; limit: number }): Promise<{ messages?: SlackApiMessage[] }>;
+  };
+}
+
+interface SlackApiMessage {
+  ts?: string;
+  text?: string;
+  user?: string;
+  bot_id?: string;
+  thread_ts?: string;
+  reply_count?: number;
 }
 
 function readOptional(env: NodeJS.ProcessEnv, name: string): string | null {
@@ -39,6 +60,15 @@ function parseBoolean(value: string | null, fallback: boolean): boolean {
   throw new Error("SLACK_AGENT_NETWORK_ENABLED debe ser true o false.");
 }
 
+function readPollIntervalMs(value: string | null): number {
+  if (!value) return DEFAULT_POLL_INTERVAL_MS;
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes < 1) {
+    throw new Error("POLL_INTERVAL_MINUTES debe ser un número de al menos 1.");
+  }
+  return minutes * 60 * 1_000;
+}
+
 export function loadFornexaGptBridgeConfig(
   env: NodeJS.ProcessEnv = process.env
 ): FornexaGptBridgeConfig {
@@ -53,6 +83,7 @@ export function loadFornexaGptBridgeConfig(
     botUserId: readOptional(env, "SLACK_BOT_USER_ID"),
     botId: readOptional(env, "SLACK_BOT_ID"),
     controlToken: readOptional(env, "MESH_CONTROL_TOKEN"),
+    pollIntervalMs: readPollIntervalMs(readOptional(env, "POLL_INTERVAL_MINUTES")),
   };
   if (!enabled) return config;
 
@@ -120,6 +151,68 @@ function createPublisher(client: WebClient, channelId: string): MeshBridgePublis
   };
 }
 
+function toPolledMeshMessage(message: SlackApiMessage): PolledMeshMessage {
+  return {
+    ts: message.ts ?? "",
+    text: message.text ?? "",
+    user: message.user,
+    botId: message.bot_id,
+    threadTs: message.thread_ts,
+    replyCount: message.reply_count,
+  };
+}
+
+/**
+ * Reconciles the same bounded MESH/1 view used by the full reviewers. This is
+ * strictly a delayed-delivery fallback when Slack Events are absent or late.
+ */
+export async function reconcileFornexaGptBridgePolling(options: {
+  client: FornexaGptBridgeSlackClient;
+  bridge: MeshBridge;
+  config: Pick<FornexaGptBridgeConfig, "channelId">;
+  onResult?: (result: "acknowledged" | "ack_received") => void;
+}): Promise<void> {
+  const history = await options.client.conversations.history({
+    channel: options.config.channelId,
+    limit: MAX_MESH_ROOTS_PER_POLL,
+  });
+  await reconcilePolledMesh({
+    bridge: options.bridge,
+    channelId: options.config.channelId,
+    messages: (history.messages ?? []).map(toPolledMeshMessage),
+    async readThread(threadTs, maxMessages) {
+      const replies = await options.client.conversations.replies({
+        channel: options.config.channelId,
+        ts: threadTs,
+        limit: Math.min(maxMessages, MAX_MESH_MESSAGES_PER_THREAD),
+      });
+      return (replies.messages ?? []).map(toPolledMeshMessage);
+    },
+    onResult: options.onResult,
+  });
+}
+
+function startFornexaGptBridgePolling(
+  client: FornexaGptBridgeSlackClient,
+  bridge: MeshBridge,
+  config: Pick<FornexaGptBridgeConfig, "channelId" | "pollIntervalMs" | "agentLabel">
+): void {
+  const poll = () => reconcileFornexaGptBridgePolling({
+    client,
+    bridge,
+    config,
+    onResult(result) {
+      console.log(`[${new Date().toISOString()}] MESH/1 ${result} por sondeo en ${config.agentLabel}.`);
+    },
+  }).catch((error) => {
+    console.error("Error en el sondeo de respaldo MESH/1 de FornexaGPT:", error);
+  });
+
+  const interval = setInterval(poll, config.pollIntervalMs);
+  interval.unref();
+  void poll();
+}
+
 export async function createFornexaGptBridgeServer(
   config = loadFornexaGptBridgeConfig()
 ): Promise<http.Server> {
@@ -135,6 +228,7 @@ export async function createFornexaGptBridgeServer(
       { channelId: config.channelId, localLabel: config.agentLabel, peers: config.peers },
       createPublisher(client, config.channelId)
     );
+    startFornexaGptBridgePolling(client, bridge, config);
   }
 
   return http.createServer((req, res) => {
