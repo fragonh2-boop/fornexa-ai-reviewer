@@ -51,3 +51,16 @@ Configura en la app de Slack `message.channels` con la URL
 operativas. Después de desplegar y validar la identidad, la activación debe ser
 por pares y registrar para cada ruta el `TRACE`, ambos bots y el ACK. El bridge
 no prueba ni habilita por sí mismo las doce rutas.
+
+## Render y secreto de control
+
+`render.yaml` declara `fornexa-gpt-bridge` sobre la rama `main`, con despliegue
+automático desactivado y MESH inerte. Al provisionarlo, introduce
+`MESH_CONTROL_TOKEN` desde el gestor de secretos autorizado y entrégalo solo al
+controlador que vaya a invocar `/mesh/ping`; no se puede reconstruir desde el
+repositorio ni desde los logs. Para rotarlo, genera un valor nuevo fuera de Git,
+reemplázalo en Render, reinicia el servicio y revoca el anterior.
+
+El plan `free` sirve para preparar el servicio, pero puede dormir y retrasar la
+respuesta a Slack. Antes de activar una malla con expectativa 24/7, mueve el
+bridge a un plan always-on y registra la ventana de mantenimiento o el rollback.
