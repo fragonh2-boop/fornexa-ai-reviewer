@@ -45,6 +45,10 @@ modelo, reenvíos ni un tercer salto.
 - Un `TRACE` se procesa una vez por instancia y el máximo de saltos es uno.
 - La ruta MESH se procesa antes de las rutas humanas y no se convierte en
   `MODE: IMPLEMENT`, revisión, aprobación o conversación con herramientas.
+- Slack Events es la vía primaria. El sondeo existente solo reconcilia como
+  respaldo raíces que empiezan exactamente por `MESH/1` y hasta veinte mensajes
+  por hilo; vuelve a aplicar la misma validación de par, firma e identidad y no
+  interpreta texto libre.
 - Fran conserva su cuenta humana: ningún agente puede publicar con su token ni
   añadir el pie “Enviado usando …” como sustituto de identidad.
 
