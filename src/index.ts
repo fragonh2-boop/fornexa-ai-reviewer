@@ -36,6 +36,7 @@ import {
 } from "./slack-events.js";
 import { MeshBridge, MeshBridgeError } from "./mesh-bridge.js";
 import { isMeshControlAuthorized, parseMeshPingTarget } from "./mesh-control.js";
+import { reconcilePolledMesh } from "./mesh-poll.js";
 import { verifySlackPublisherIdentity } from "./slack-publisher-identity.js";
 import type { ReviewRequest } from "./review-request.js";
 import {
@@ -460,6 +461,17 @@ async function findPendingContextThread(messages: SlackMessage[]): Promise<{
 
 async function tick(): Promise<void> {
   const messages = await readRecentHistory();
+  if (meshBridge) {
+    await reconcilePolledMesh({
+      bridge: meshBridge,
+      channelId: config.slack.channelId,
+      messages,
+      readThread,
+      onResult(result) {
+        console.log(`[${new Date().toISOString()}] MESH/1 ${result} por sondeo en ${config.slack.agentLabel}.`);
+      },
+    });
+  }
   for (const message of messages) {
     if (message.botId) continue;
     if (await reportMalformed(message)) continue;

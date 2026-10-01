@@ -55,7 +55,7 @@ export async function readRecentHistory(maxMessages = 1000): Promise<SlackMessag
   return messages.slice(0, maxMessages);
 }
 
-export async function readThread(threadTs: string): Promise<SlackMessage[]> {
+export async function readThread(threadTs: string, maxMessages = 1000): Promise<SlackMessage[]> {
   const messages: SlackMessage[] = [];
   let cursor: string | undefined;
 
@@ -63,14 +63,14 @@ export async function readThread(threadTs: string): Promise<SlackMessage[]> {
     const result = await slack.conversations.replies({
       channel: config.slack.channelId,
       ts: threadTs,
-      limit: 200,
+      limit: Math.min(200, maxMessages - messages.length),
       cursor,
     });
     messages.push(...(result.messages ?? []).map(toSlackMessage));
     cursor = result.response_metadata?.next_cursor || undefined;
-  } while (cursor);
+  } while (cursor && messages.length < maxMessages);
 
-  return messages;
+  return messages.slice(0, maxMessages);
 }
 
 import { isSenderAllowed, type BotAllowlistOptions } from "../slack-events.js";
