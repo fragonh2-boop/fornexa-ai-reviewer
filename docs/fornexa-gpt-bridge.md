@@ -46,6 +46,12 @@ declarados, termina sin abrir el puerto.
 - `GET /mesh/status`: exige el mismo bearer y devuelve solo el número de PINGs
   pendientes, que caducan a los quince minutos.
 
+Además de Events, el bridge reconcilia cada cinco minutos las veinte raíces
+MESH/1 más recientes y, como máximo, veinte mensajes por hilo. Es un respaldo
+acotado frente a entregas tardías: pasa cada candidato por la misma validación
+de identidad y no procesa texto libre. `POLL_INTERVAL_MINUTES` puede aumentar
+el intervalo; no se admiten valores inferiores a un minuto.
+
 Configura en la app de Slack `message.channels` con la URL
 `https://<bridge>.onrender.com/slack/events` y no subscribas al bridge a rutas
 operativas. Después de desplegar y validar la identidad, la activación debe ser
