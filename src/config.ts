@@ -41,13 +41,21 @@ if (mentionsEnabled && !/^U[A-Z0-9]+$/.test(botUserId ?? "")) {
 }
 const agentNetworkEnabled = booleanValue("SLACK_AGENT_NETWORK_ENABLED", false);
 const agentNetworkPeers = parseAgentNetworkPeers(process.env.SLACK_AGENT_NETWORK_PEERS);
+const meshControlToken = process.env.MESH_CONTROL_TOKEN?.trim() || null;
 const ownBotId = process.env.SLACK_BOT_ID?.trim() || null;
+const signingSecret = process.env.SLACK_SIGNING_SECRET?.trim() || null;
 const agentLabel = process.env.SLACK_AGENT_LABEL?.trim() || provider.toUpperCase();
 if (agentNetworkEnabled && (!/^U[A-Z0-9]+$/.test(botUserId ?? "") || !/^B[A-Z0-9]+$/.test(ownBotId ?? ""))) {
   throw new Error("MESH/1 exige SLACK_BOT_USER_ID y SLACK_BOT_ID de la identidad propia.");
 }
 if (agentNetworkEnabled && agentNetworkPeers.length === 0) {
   throw new Error("MESH/1 exige pares explícitos en SLACK_AGENT_NETWORK_PEERS.");
+}
+if (agentNetworkEnabled && !meshControlToken) {
+  throw new Error("MESH/1 exige MESH_CONTROL_TOKEN para emitir PINGs controlados.");
+}
+if (agentNetworkEnabled && !signingSecret) {
+  throw new Error("MESH/1 exige SLACK_SIGNING_SECRET para verificar PINGs y ACKs.");
 }
 if (agentNetworkEnabled && !isAgentNetworkLabel(agentLabel)) {
   throw new Error("MESH/1 exige un SLACK_AGENT_LABEL válido (A-Z, 2-31 caracteres).");
@@ -65,7 +73,7 @@ export const config = {
     botToken: required("SLACK_BOT_TOKEN"),
     channelId: process.env.SLACK_CHANNEL_ID ?? "C0BT661FYLW",
     agentLabel,
-    signingSecret: process.env.SLACK_SIGNING_SECRET?.trim() || null,
+    signingSecret,
     mentions: {
       enabled: mentionsEnabled,
       botUserId,
@@ -74,6 +82,7 @@ export const config = {
     agentNetwork: {
       enabled: agentNetworkEnabled,
       peers: agentNetworkPeers,
+      controlToken: meshControlToken,
     },
     ownBotId,
   },

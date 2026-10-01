@@ -1,11 +1,11 @@
 import "dotenv/config";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
-import { timingSafeEqual } from "node:crypto";
 import { WebClient } from "@slack/web-api";
 import { isAgentNetworkLabel, parseAgentNetworkPeers, type AgentNetworkPeer } from "./agent-network.js";
 import { MeshBridge, MeshBridgeError, type MeshBridgePublisher } from "./mesh-bridge.js";
 import { parseSlackEnvelope, verifySlackSignature } from "./slack-events.js";
 import { verifySlackPublisherIdentity } from "./slack-publisher-identity.js";
+import { isMeshControlAuthorized, parseMeshPingTarget } from "./mesh-control.js";
 
 const DEFAULT_CHANNEL_ID = "C0BT661FYLW";
 const MAX_BODY_BYTES = 64 * 1024;
@@ -102,26 +102,9 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function authorized(req: IncomingMessage, expectedToken: string | null): boolean {
-  if (!expectedToken) return false;
-  const supplied = req.headers.authorization;
-  if (!supplied?.startsWith("Bearer ")) return false;
-  const received = Buffer.from(supplied.slice("Bearer ".length), "utf8");
-  const expected = Buffer.from(expectedToken, "utf8");
-  return received.length === expected.length && timingSafeEqual(received, expected);
-}
-
 async function readPingTarget(req: IncomingMessage): Promise<string | null> {
   const rawBody = await readRawBody(req);
-  try {
-    const parsed: unknown = JSON.parse(rawBody);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const entries = Object.entries(parsed);
-    if (entries.length !== 1 || entries[0][0] !== "to" || typeof entries[0][1] !== "string") return null;
-    return entries[0][1].trim() || null;
-  } catch {
-    return null;
-  }
+  return parseMeshPingTarget(rawBody);
 }
 
 function createPublisher(client: WebClient, channelId: string): MeshBridgePublisher {
@@ -202,7 +185,7 @@ export async function createFornexaGptBridgeServer(
         sendJson(res, 503, { ok: false, error: "mesh_disabled" });
         return;
       }
-      if (!authorized(req, config.controlToken)) {
+      if (!isMeshControlAuthorized(req.headers.authorization, config.controlToken)) {
         sendJson(res, 401, { ok: false, error: "unauthorized" });
         return;
       }
@@ -226,7 +209,7 @@ export async function createFornexaGptBridgeServer(
     }
 
     if (req.method === "GET" && pathname === "/mesh/status") {
-      if (!authorized(req, config.controlToken)) {
+      if (!isMeshControlAuthorized(req.headers.authorization, config.controlToken)) {
         sendJson(res, 401, { ok: false, error: "unauthorized" });
         return;
       }

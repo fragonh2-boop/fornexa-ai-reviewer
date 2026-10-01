@@ -55,6 +55,10 @@ modelo, reenvíos ni un tercer salto.
 2. Desplegar la misma versión revisada a Claude, Gemini y DeepSeek con
    `SLACK_AGENT_NETWORK_ENABLED=false`.
 3. Configurar los pares explícitos en cada servicio y activar uno por uno.
+   Cada servicio usa un `MESH_CONTROL_TOKEN` aleatorio, único y almacenado como
+   secreto del proveedor para su ruta autenticada `/mesh/ping`; no se comparte
+   entre servicios ni se registra. El JSON admite solo `{ "to": "LABEL" }` y
+   aplica límites por par.
 4. Probar las doce direcciones GPT/Claude/Gemini/DeepSeek con un `PING` nuevo por
    ruta; guardar emisor real, receptor real, `TRACE`, timestamp y `ACK`.
 5. Solo si la matriz está completa, incorporar un paquete de contexto versionado
