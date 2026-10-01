@@ -120,17 +120,19 @@ export function getEffectiveSlackClient(): WebClient {
   return getBotPublisherClient() ?? slack;
 }
 
-export async function postToChannelSmart(text: string): Promise<void> {
+export async function postToChannelSmart(text: string): Promise<string> {
   const client = getEffectiveSlackClient();
-  await client.chat.postMessage({
+  const result = await client.chat.postMessage({
     channel: config.slack.channelId,
     text,
     unfurl_links: false,
   });
+  if (!result.ts) throw new Error("Slack no devolvió ts al publicar un mensaje.");
+  return result.ts;
 }
 
-export async function postToChannel(text: string): Promise<void> {
-  await postToChannelSmart(text);
+export async function postToChannel(text: string): Promise<string> {
+  return postToChannelSmart(text);
 }
 
 export async function postToThreadSmart(text: string | string[], threadTs: string): Promise<void> {

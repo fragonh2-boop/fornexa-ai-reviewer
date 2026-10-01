@@ -41,7 +41,7 @@ interface PendingPing {
 export type MeshInboundResult = "ignored" | "acknowledged" | "ack_received";
 
 /**
- * State machine for the dedicated FornexaGPT MESH/1 bridge. It deliberately
+ * State machine for the bounded MESH/1 bridge used by each agent. It deliberately
  * has no model, GitHub, deployment, arbitrary text, or command capability.
  */
 export class MeshBridge {

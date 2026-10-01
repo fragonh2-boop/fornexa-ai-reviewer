@@ -34,11 +34,8 @@ import {
   type SlackHumanMessageEvent,
   verifySlackSignature,
 } from "./slack-events.js";
-import {
-  buildAgentNetworkAck,
-  extractAgentNetworkMessage,
-  type AgentNetworkMessage,
-} from "./agent-network.js";
+import { MeshBridge, MeshBridgeError } from "./mesh-bridge.js";
+import { isMeshControlAuthorized, parseMeshPingTarget } from "./mesh-control.js";
 import { verifySlackPublisherIdentity } from "./slack-publisher-identity.js";
 import type { ReviewRequest } from "./review-request.js";
 import {
@@ -73,13 +70,31 @@ const inFlightContextThreads = new Map<string, number>();
 const inFlightMentions = new Map<string, number>();
 const nonReplyableMentionRequestTs = new Set<string>();
 const processedEventIds = new Set<string>();
-const processedAgentNetworkTraces = new Set<string>();
+let meshBridge: MeshBridge | null = null;
 const reportMalformed = createDiagnosticReporter(
   config.slack.agentLabel,
   postToThread,
   Date.now
 );
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
+
+function createMeshBridge(): MeshBridge {
+  return new MeshBridge(
+    {
+      channelId: config.slack.channelId,
+      localLabel: config.slack.agentLabel,
+      peers: config.slack.agentNetwork.peers,
+    },
+    {
+      async postToChannel(text) {
+        return { ts: await postToChannel(text) };
+      },
+      async postToThread(text, threadTs) {
+        await postToThread(text, threadTs);
+      },
+    }
+  );
+}
 
 function rememberEvent(eventId: string): boolean {
   if (processedEventIds.has(eventId)) return false;
@@ -91,37 +106,6 @@ function rememberEvent(eventId: string): boolean {
   }
 
   return true;
-}
-
-function rememberAgentNetworkTrace(traceId: string): boolean {
-  if (processedAgentNetworkTraces.has(traceId)) return false;
-  processedAgentNetworkTraces.add(traceId);
-
-  if (processedAgentNetworkTraces.size > MAX_REMEMBERED_EVENT_IDS) {
-    const oldest = processedAgentNetworkTraces.values().next().value;
-    if (oldest) processedAgentNetworkTraces.delete(oldest);
-  }
-
-  return true;
-}
-
-async function processAgentNetworkMessage(message: AgentNetworkMessage): Promise<void> {
-  if (!rememberAgentNetworkTrace(message.traceId)) {
-    console.log(`[${new Date().toISOString()}] MESH/1 duplicado ${message.traceId}; se omite.`);
-    return;
-  }
-
-  if (message.type === "ACK") {
-    console.log(
-      `[${new Date().toISOString()}] MESH/1 ACK ${message.traceId} de ${message.from} recibido por ${config.slack.agentLabel}.`
-    );
-    return;
-  }
-
-  await postToThread(buildAgentNetworkAck(message, config.slack.agentLabel), message.threadTs ?? message.ts);
-  console.log(
-    `[${new Date().toISOString()}] MESH/1 PING ${message.traceId} de ${message.from} confirmado por ${config.slack.agentLabel}.`
-  );
 }
 
 function rememberNonReplyableMention(requestTs: string): void {
@@ -548,25 +532,24 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
     return;
   }
 
-  sendJson(res, 200, { ok: true });
-
-  if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
-  if (config.slack.agentNetwork.enabled) {
-    const networkMessage = extractAgentNetworkMessage({
-      envelope,
-      channelId: config.slack.channelId,
-      localLabel: config.slack.agentLabel,
-      peers: config.slack.agentNetwork.peers,
-    });
-    if (networkMessage) {
-      setImmediate(() => {
-        processAgentNetworkMessage(networkMessage).catch((err) =>
-          console.error("Error procesando MESH/1:", err)
-        );
-      });
+  if (meshBridge) {
+    try {
+      const result = await meshBridge.receive(envelope);
+      if (result !== "ignored") {
+        console.log(`[${new Date().toISOString()}] MESH/1 ${result} en ${config.slack.agentLabel}.`);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+    } catch (error) {
+      console.error("Error entregando MESH/1:", error);
+      sendJson(res, 503, { ok: false, error: "mesh_delivery_failed" });
       return;
     }
   }
+
+  sendJson(res, 200, { ok: true });
+
+  if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
 
   const humanMessage = extractHumanMessage(envelope, config.slack.channelId);
   if (humanMessage && await reportMalformed(humanMessage)) return;
@@ -607,6 +590,54 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   }
 }
 
+async function handleMeshPing(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!meshBridge || !config.slack.agentNetwork.enabled) {
+    sendJson(res, 503, { ok: false, error: "mesh_disabled" });
+    return;
+  }
+  if (!isMeshControlAuthorized(req.headers.authorization, config.slack.agentNetwork.controlToken)) {
+    sendJson(res, 401, { ok: false, error: "unauthorized" });
+    return;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await readRawBody(req, 64 * 1024);
+  } catch {
+    sendJson(res, 413, { ok: false, error: "request_too_large" });
+    return;
+  }
+  const to = parseMeshPingTarget(rawBody);
+  if (!to) {
+    sendJson(res, 400, { ok: false, error: "invalid_target" });
+    return;
+  }
+
+  try {
+    const result = await meshBridge.ping(to);
+    sendJson(res, 202, { ok: true, ...result });
+  } catch (error) {
+    if (error instanceof MeshBridgeError) {
+      sendJson(res, error.code === "invalid_target" ? 422 : 429, { ok: false, error: error.code });
+      return;
+    }
+    console.error("Error emitiendo MESH/1:", error);
+    sendJson(res, 503, { ok: false, error: "mesh_ping_failed" });
+  }
+}
+
+function handleMeshStatus(req: IncomingMessage, res: ServerResponse): void {
+  if (!isMeshControlAuthorized(req.headers.authorization, config.slack.agentNetwork.controlToken)) {
+    sendJson(res, 401, { ok: false, error: "unauthorized" });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    mesh: config.slack.agentNetwork.enabled ? "enabled" : "disabled",
+    pendingPings: meshBridge?.pendingCount() ?? 0,
+  });
+}
+
 function startHttpServer(): void {
   const port = Number(process.env.PORT) || 10000;
   http
@@ -629,6 +660,19 @@ function startHttpServer(): void {
           console.error("Error atendiendo Slack Events:", err);
           if (!res.headersSent) sendJson(res, 500, { ok: false, error: "internal_error" });
         });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/mesh/ping") {
+        handleMeshPing(req, res).catch((err) => {
+          console.error("Error en /mesh/ping:", err);
+          if (!res.headersSent) sendJson(res, 500, { ok: false, error: "internal_error" });
+        });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/mesh/status") {
+        handleMeshStatus(req, res);
         return;
       }
 
@@ -675,6 +719,7 @@ async function main(): Promise<void> {
       expectedUserId: config.slack.mentions.botUserId!,
       expectedBotId: config.slack.ownBotId!,
     });
+    meshBridge = createMeshBridge();
     console.log("MESH/1: identidad del token publicador verificada.");
   }
 
