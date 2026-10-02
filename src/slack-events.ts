@@ -107,10 +107,11 @@ export function extractHumanMessage(
   if (envelope.type !== "event_callback") return null;
   const event = envelope.event;
   const hasSender = Boolean(event?.user || event?.bot_id);
+  const isBotMessage = event?.subtype === "bot_message";
   if (
     !event ||
     (event.type !== "message" && event.type !== "app_mention") ||
-    event.subtype ||
+    (event.subtype && !isBotMessage) ||
     !isSenderAllowed({ botId: event.bot_id, user: event.user }, options) ||
     event.channel !== expectedChannel ||
     typeof event.text !== "string" ||

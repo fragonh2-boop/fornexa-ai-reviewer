@@ -73,7 +73,8 @@ test("the FornexaGPT fallback polls only bounded canonical MESH/1 messages", asy
       },
     },
     bridge,
-    config: { channelId: "CFORNEXA" },
+    config: { channelId: "CFORNEXA", agentLabel: "GPT", botId: "BGPT" },
+    nowMs: 1_700_000_010_000,
   });
 
   assert.deepEqual(requests, ["history:CFORNEXA:20", `replies:CFORNEXA:${ping.rootTs}:20`]);

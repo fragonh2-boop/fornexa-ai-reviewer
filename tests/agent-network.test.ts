@@ -6,6 +6,7 @@ import {
   formatAgentNetworkMessage,
   parseAgentNetworkMessage,
   parseAgentNetworkPeers,
+  peerIdentityAllowlist,
 } from "../src/agent-network.js";
 
 const peers = parseAgentNetworkPeers("GPT:UGPT:BGPT,CLAUDE:UCLAUDE:BCLAUDE");
@@ -111,4 +112,9 @@ test("MESH/1 peer configuration rejects wildcards and duplicate identities", () 
   assert.throws(() => parseAgentNetworkPeers("*:UGPT:BGPT"));
   assert.throws(() => parseAgentNetworkPeers("GPT:UGPT:BGPT,GPT:UOTHER:BOTHER"));
   assert.throws(() => parseAgentNetworkPeers("GPT:UGPT:BGPT,CLAUDE:UGPT:BCLAUDE"));
+});
+
+test("review sender allowlist is limited to declared peer identities", () => {
+  assert.deepEqual(peerIdentityAllowlist(peers), ["BGPT", "UGPT", "BCLAUDE", "UCLAUDE"]);
+  assert.deepEqual(peerIdentityAllowlist([]), []);
 });

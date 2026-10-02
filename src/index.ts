@@ -72,6 +72,11 @@ const inFlightMentions = new Map<string, number>();
 const nonReplyableMentionRequestTs = new Set<string>();
 const processedEventIds = new Set<string>();
 let meshBridge: MeshBridge | null = null;
+const botReviewRequestOptions = {
+  allowedBotIds: config.slack.allowedBotIds,
+  ownBotId: config.slack.ownBotId,
+  ownUserId: config.slack.mentions.botUserId,
+};
 const reportMalformed = createDiagnosticReporter(
   config.slack.agentLabel,
   postToThread,
@@ -465,6 +470,8 @@ async function tick(): Promise<void> {
     await reconcilePolledMesh({
       bridge: meshBridge,
       channelId: config.slack.channelId,
+      localLabel: config.slack.agentLabel,
+      localBotId: config.slack.ownBotId,
       messages,
       readThread,
       onResult(result) {
@@ -477,7 +484,11 @@ async function tick(): Promise<void> {
     if (await reportMalformed(message)) continue;
     if (await processImplementation(message)) break;
   }
-  const pending = findPendingHandoff(messages, config.slack.agentLabel);
+  const pending = findPendingHandoff(
+    messages,
+    config.slack.agentLabel,
+    botReviewRequestOptions
+  );
 
   if (pending) {
     await processReviewRequest(pending);
@@ -582,7 +593,8 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   const request = extractReviewRequest(
     envelope,
     config.slack.channelId,
-    config.slack.agentLabel
+    config.slack.agentLabel,
+    botReviewRequestOptions
   );
   if (request) {
     setImmediate(() => {
