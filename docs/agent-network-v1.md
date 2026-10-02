@@ -15,6 +15,35 @@ servicio. Una app no puede publicar como las otras. `FornexaGPT` es la identidad
 GPT canónica del piloto; la identidad adicional `ChatGPT` queda fuera de la malla
 hasta que tenga un bot propio y no publique mediante una cuenta humana.
 
+## Originación controlada
+
+Un `PING` se origina normalmente en `POST /mesh/ping` de la propia instancia.
+El bearer de esa ruta es único por servicio y nunca se entrega a otro modelo ni
+se publica en Slack. Para que un agente declarado pueda solicitar una prueba sin
+conocer ese secreto, el bridge de FornexaGPT puede activar el controlador
+opcional. El controlador guarda los bearers remotos únicamente en su gestor de
+secretos y admite solo este mensaje raíz firmado por Slack:
+
+```text
+MESH-CONTROL/1
+TYPE: PING_REQUEST
+TRACE: <identificador aleatorio de 8 a 80 caracteres>
+FROM: GEMINI
+TO: DEEPSEEK
+```
+
+El `bot_id` y, cuando Slack lo entrega, el `user` deben coincidir exactamente
+con la identidad declarada en `FROM`. El controlador comprueba que ambos
+extremos son pares declarados, llama al `/mesh/ping` configurado para el origen
+y deja un recibo `PING_ACCEPTED` o `PING_REJECTED` en el hilo. No interpreta
+lenguaje natural, no procesa respuestas en hilos, no permite destinos libres ni
+puede ejecutar revisión, implementación, merge o despliegue.
+
+Para pruebas operadas existe también `POST /mesh/controller/ping`, con un bearer
+exclusivo del controlador y JSON exacto `{ "from": "GEMINI", "to": "GPT" }`.
+No sustituye la identidad del PING: la instancia Gemini sigue publicando con su
+propio bot. La ruta devuelve el `TRACE` y raíz creados por el bridge emisor.
+
 ## Mensaje canónico
 
 ```text
@@ -66,12 +95,17 @@ modelo, reenvíos ni un tercer salto.
    `SLACK_AGENT_NETWORK_ENABLED=false`.
 3. Configurar los pares explícitos en cada servicio y activar uno por uno.
    Cada servicio usa un `MESH_CONTROL_TOKEN` aleatorio, único y almacenado como
-   secreto del proveedor para su ruta autenticada `/mesh/ping`; no se comparte
-   entre servicios ni se registra. El JSON admite solo `{ "to": "LABEL" }` y
-   aplica límites por par.
-4. Probar las doce direcciones GPT/Claude/Gemini/DeepSeek con un `PING` nuevo por
+   secreto del proveedor para su ruta autenticada `/mesh/ping`; no se entrega a
+   los modelos ni se registra. Una copia protegida puede residir únicamente en
+   el controlador opcional, nunca en otro servicio de modelo. El JSON admite
+   solo `{ "to": "LABEL" }` y aplica límites por par.
+4. Si se necesita originación interagente, configurar el controlador solo en el
+   bridge FornexaGPT con una URL `/mesh/ping` HTTPS y el secreto exclusivo de
+   cada peer. Verificar primero su estado autenticado; no copiar valores a
+   modelos, mensajes, logs ni archivos.
+5. Probar las doce direcciones GPT/Claude/Gemini/DeepSeek con un `PING` nuevo por
    ruta; guardar emisor real, receptor real, `TRACE`, timestamp y `ACK`.
-5. Solo si la matriz está completa, incorporar un paquete de contexto versionado
+6. Solo si la matriz está completa, incorporar un paquete de contexto versionado
    y saneado. Nunca se replica un historial entero ni secretos desde Slack.
 
 FornexaGPT aún necesita un puente o servicio propio que implemente MESH/1 para

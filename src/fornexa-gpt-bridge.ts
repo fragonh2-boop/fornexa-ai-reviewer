@@ -3,6 +3,17 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { WebClient } from "@slack/web-api";
 import { isAgentNetworkLabel, parseAgentNetworkPeers, type AgentNetworkPeer } from "./agent-network.js";
 import { MeshBridge, MeshBridgeError, type MeshBridgePublisher } from "./mesh-bridge.js";
+import {
+  extractMeshControllerRequest,
+  formatMeshControllerFailureReceipt,
+  formatMeshControllerReceipt,
+  isMeshControllerAuthorized,
+  MeshController,
+  MeshControllerError,
+  parseMeshControllerOrigins,
+  parseMeshControllerPing,
+  type MeshControllerOrigin,
+} from "./mesh-controller.js";
 import { reconcilePolledMesh, type PolledMeshMessage } from "./mesh-poll.js";
 import { parseSlackEnvelope, verifySlackSignature } from "./slack-events.js";
 import { verifySlackPublisherIdentity } from "./slack-publisher-identity.js";
@@ -24,6 +35,9 @@ export interface FornexaGptBridgeConfig {
   botUserId: string | null;
   botId: string | null;
   controlToken: string | null;
+  controllerEnabled: boolean;
+  controllerToken: string | null;
+  controllerOrigins: MeshControllerOrigin[];
   pollIntervalMs: number;
 }
 
@@ -73,6 +87,7 @@ export function loadFornexaGptBridgeConfig(
   env: NodeJS.ProcessEnv = process.env
 ): FornexaGptBridgeConfig {
   const enabled = parseBoolean(readOptional(env, "SLACK_AGENT_NETWORK_ENABLED"), false);
+  const controllerEnabled = parseBoolean(readOptional(env, "MESH_CONTROLLER_ENABLED"), false);
   const config: FornexaGptBridgeConfig = {
     enabled,
     channelId: readOptional(env, "SLACK_CHANNEL_ID") ?? DEFAULT_CHANNEL_ID,
@@ -83,9 +98,15 @@ export function loadFornexaGptBridgeConfig(
     botUserId: readOptional(env, "SLACK_BOT_USER_ID"),
     botId: readOptional(env, "SLACK_BOT_ID"),
     controlToken: readOptional(env, "MESH_CONTROL_TOKEN"),
+    controllerEnabled,
+    controllerToken: readOptional(env, "MESH_CONTROLLER_TOKEN"),
+    controllerOrigins: [],
     pollIntervalMs: readPollIntervalMs(readOptional(env, "POLL_INTERVAL_MINUTES")),
   };
-  if (!enabled) return config;
+  if (!enabled) {
+    if (controllerEnabled) throw new Error("El controlador MESH exige SLACK_AGENT_NETWORK_ENABLED=true.");
+    return config;
+  }
 
   required(env, "SLACK_BOT_TOKEN");
   required(env, "SLACK_SIGNING_SECRET");
@@ -106,6 +127,14 @@ export function loadFornexaGptBridgeConfig(
     (peer) => peer.label === config.agentLabel || peer.userId === config.botUserId || peer.botId === config.botId
   )) {
     throw new Error("El bridge no admite su propia identidad entre los pares MESH/1.");
+  }
+  if (controllerEnabled) {
+    required(env, "MESH_CONTROLLER_TOKEN");
+    config.controllerOrigins = parseMeshControllerOrigins({
+      urls: readOptional(env, "MESH_CONTROLLER_ORIGIN_URLS"),
+      tokens: readOptional(env, "MESH_CONTROLLER_ORIGIN_TOKENS"),
+      peers: config.peers,
+    });
   }
   return config;
 }
@@ -136,6 +165,11 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 async function readPingTarget(req: IncomingMessage): Promise<string | null> {
   const rawBody = await readRawBody(req);
   return parseMeshPingTarget(rawBody);
+}
+
+async function readControllerPing(req: IncomingMessage): Promise<{ from: string; to: string } | null> {
+  const rawBody = await readRawBody(req);
+  return parseMeshControllerPing(rawBody);
 }
 
 function createPublisher(client: WebClient, channelId: string): MeshBridgePublisher {
@@ -221,6 +255,8 @@ export async function createFornexaGptBridgeServer(
   config = loadFornexaGptBridgeConfig()
 ): Promise<http.Server> {
   let bridge: MeshBridge | null = null;
+  let controller: MeshController | null = null;
+  let publisher: MeshBridgePublisher | null = null;
   if (config.enabled) {
     const client = new WebClient(config.botToken!);
     await verifySlackPublisherIdentity({
@@ -228,10 +264,17 @@ export async function createFornexaGptBridgeServer(
       expectedUserId: config.botUserId!,
       expectedBotId: config.botId!,
     });
+    publisher = createPublisher(client, config.channelId);
     bridge = new MeshBridge(
       { channelId: config.channelId, localLabel: config.agentLabel, peers: config.peers },
-      createPublisher(client, config.channelId)
+      publisher
     );
+    if (config.controllerEnabled) {
+      controller = new MeshController(
+        { localLabel: config.agentLabel, peers: config.peers, origins: config.controllerOrigins },
+        (to) => bridge!.ping(to)
+      );
+    }
     startFornexaGptBridgePolling(client, bridge, config);
   }
 
@@ -268,7 +311,41 @@ export async function createFornexaGptBridgeServer(
             sendJson(res, 200, { challenge: envelope.challenge ?? "" });
             return;
           }
-          await bridge.receive(envelope);
+          const meshResult = await bridge.receive(envelope);
+          if (meshResult !== "ignored") {
+            sendJson(res, 200, { ok: true });
+            return;
+          }
+          if (controller && publisher) {
+            const controlRequest = extractMeshControllerRequest({
+              envelope,
+              channelId: config.channelId,
+              localIdentity: {
+                label: config.agentLabel,
+                userId: config.botUserId!,
+                botId: config.botId!,
+              },
+              peers: config.peers,
+            });
+            if (controlRequest) {
+              try {
+                const result = await controller.ping({ ...controlRequest, requestTrace: controlRequest.traceId });
+                await publisher.postToThread(
+                  formatMeshControllerReceipt(controlRequest, result, config.agentLabel),
+                  controlRequest.ts
+                );
+              } catch (error) {
+                if (error instanceof MeshControllerError) {
+                  await publisher.postToThread(
+                    formatMeshControllerFailureReceipt(controlRequest, config.agentLabel, error.code),
+                    controlRequest.ts
+                  );
+                } else {
+                  throw error;
+                }
+              }
+            }
+          }
           sendJson(res, 200, { ok: true });
         })
         .catch((error: Error) => {
@@ -312,6 +389,53 @@ export async function createFornexaGptBridgeServer(
         return;
       }
       sendJson(res, 200, { ok: true, mesh: config.enabled ? "enabled" : "disabled", pendingPings: bridge?.pendingCount() ?? 0 });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/mesh/controller/ping") {
+      if (!config.controllerEnabled || !controller) {
+        sendJson(res, 503, { ok: false, error: "controller_disabled" });
+        return;
+      }
+      if (!isMeshControllerAuthorized(req.headers.authorization, config.controllerToken)) {
+        sendJson(res, 401, { ok: false, error: "unauthorized" });
+        return;
+      }
+      readControllerPing(req)
+        .then(async (request) => {
+          if (!request) {
+            sendJson(res, 400, { ok: false, error: "invalid_request" });
+            return;
+          }
+          const result = await controller!.ping(request);
+          sendJson(res, 202, { ok: true, ...result });
+        })
+        .catch((error: unknown) => {
+          if (error instanceof MeshControllerError) {
+            const status = error.code === "invalid_origin" || error.code === "invalid_target" ? 422 : 503;
+            sendJson(res, status, { ok: false, error: error.code });
+            return;
+          }
+          sendJson(res, 503, { ok: false, error: "controller_ping_failed" });
+        });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/mesh/controller/status") {
+      if (!config.controllerEnabled || !controller) {
+        sendJson(res, 503, { ok: false, error: "controller_disabled" });
+        return;
+      }
+      if (!isMeshControllerAuthorized(req.headers.authorization, config.controllerToken)) {
+        sendJson(res, 401, { ok: false, error: "unauthorized" });
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        controller: "enabled",
+        localOrigin: config.agentLabel,
+        remoteOrigins: config.controllerOrigins.map((origin) => origin.label),
+      });
       return;
     }
 

@@ -45,6 +45,12 @@ declarados, termina sin abrir el puerto.
   excede; 422 si el destino no está declarado).
 - `GET /mesh/status`: exige el mismo bearer y devuelve solo el número de PINGs
   pendientes, que caducan a los quince minutos.
+- `POST /mesh/controller/ping`: está desactivado por defecto. Cuando el
+  controlador está configurado, exige `MESH_CONTROLLER_TOKEN` y JSON exacto
+  `{ "from": "GEMINI", "to": "GPT" }`. Solo emite un PING por el bridge
+  declarado en `from`; no admite texto, revisión ni acciones operativas.
+- `GET /mesh/controller/status`: exige el bearer del controlador y muestra solo
+  las etiquetas de origen configuradas, nunca URLs ni secretos.
 
 Además de Events, el bridge reconcilia cada cinco minutos las veinte raíces
 MESH/1 más recientes y, como máximo, veinte mensajes por hilo. Es un respaldo
@@ -70,3 +76,23 @@ reemplázalo en Render, reinicia el servicio y revoca el anterior.
 El plan `free` sirve para preparar el servicio, pero puede dormir y retrasar la
 respuesta a Slack. Antes de activar una malla con expectativa 24/7, mueve el
 bridge a un plan always-on y registra la ventana de mantenimiento o el rollback.
+
+## Controlador de originación opcional
+
+Para que una IA solicite una prueba sin recibir el bearer de otra instancia,
+configura únicamente en el bridge FornexaGPT:
+
+```text
+MESH_CONTROLLER_ENABLED=true
+MESH_CONTROLLER_TOKEN=<secreto aleatorio exclusivo del controlador>
+MESH_CONTROLLER_ORIGIN_URLS={"CLAUDE":"https://fornexa-claude.onrender.com/mesh/ping",...}
+MESH_CONTROLLER_ORIGIN_TOKENS={"CLAUDE":"<bearer de Claude>",...}
+```
+
+Ambos objetos deben cubrir exactamente Claude, Gemini y DeepSeek; las URLs son
+HTTPS y terminan en `/mesh/ping`. Los valores se guardan en Render y no se
+registran. El controlador puede recibir el mensaje raíz `MESH-CONTROL/1` de un
+bot que coincida exactamente con `FROM`, o una llamada autenticada de un
+controlador operativo. En ambos casos solo solicita un `PING` de presencia:
+Slack conserva la identidad del emisor real y el ACK sigue siendo la evidencia
+de éxito.
