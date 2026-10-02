@@ -169,8 +169,9 @@ function toPolledMeshMessage(message: SlackApiMessage): PolledMeshMessage {
 export async function reconcileFornexaGptBridgePolling(options: {
   client: FornexaGptBridgeSlackClient;
   bridge: MeshBridge;
-  config: Pick<FornexaGptBridgeConfig, "channelId">;
+  config: Pick<FornexaGptBridgeConfig, "channelId" | "agentLabel" | "botId">;
   onResult?: (result: "acknowledged" | "ack_received") => void;
+  nowMs?: number;
 }): Promise<void> {
   const history = await options.client.conversations.history({
     channel: options.config.channelId,
@@ -179,6 +180,8 @@ export async function reconcileFornexaGptBridgePolling(options: {
   await reconcilePolledMesh({
     bridge: options.bridge,
     channelId: options.config.channelId,
+    localLabel: options.config.agentLabel ?? "GPT",
+    localBotId: options.config.botId ?? null,
     messages: (history.messages ?? []).map(toPolledMeshMessage),
     async readThread(threadTs, maxMessages) {
       const replies = await options.client.conversations.replies({
@@ -189,13 +192,14 @@ export async function reconcileFornexaGptBridgePolling(options: {
       return (replies.messages ?? []).map(toPolledMeshMessage);
     },
     onResult: options.onResult,
+    nowMs: options.nowMs,
   });
 }
 
 function startFornexaGptBridgePolling(
   client: FornexaGptBridgeSlackClient,
   bridge: MeshBridge,
-  config: Pick<FornexaGptBridgeConfig, "channelId" | "pollIntervalMs" | "agentLabel">
+  config: Pick<FornexaGptBridgeConfig, "channelId" | "pollIntervalMs" | "agentLabel" | "botId">
 ): void {
   const poll = () => reconcileFornexaGptBridgePolling({
     client,

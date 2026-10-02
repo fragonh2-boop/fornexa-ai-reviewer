@@ -15,6 +15,15 @@ export interface AgentNetworkPeer {
   botId: string;
 }
 
+/**
+ * Explicit Slack identities that may submit a low-risk review handoff when the
+ * agent network is enabled. Keeping this derived from the MESH peer list avoids
+ * a second, drifting trust list and deliberately has no wildcard mode.
+ */
+export function peerIdentityAllowlist(peers: AgentNetworkPeer[]): string[] {
+  return [...new Set(peers.flatMap((peer) => [peer.botId, peer.userId]))];
+}
+
 export interface AgentNetworkMessage {
   type: AgentNetworkType;
   traceId: string;

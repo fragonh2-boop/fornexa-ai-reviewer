@@ -308,6 +308,16 @@ test("isSenderAllowed y extractReviewRequest soportan allowlist de bots y previe
   assert.ok(reqAllowed);
   assert.equal(reqAllowed.requestedHead, "ab87ab8a6807386069ee2324988d40f58e0861c7");
 
+  // Slack delivers bot publications as bot_message. The exact allowlist still
+  // applies, so this must work without widening implementation or mention flows.
+  const botMessageRequest = extractReviewRequest(
+    { ...envelope, event: { ...envelope.event, subtype: "bot_message", user: undefined } },
+    "C0BT661FYLW",
+    "DEEPSEEK",
+    { allowedBotIds: ["BGEMINI"] }
+  );
+  assert.ok(botMessageRequest);
+
   // Con ownBotId coincidente => null (anti-bucle)
   assert.equal(
     extractReviewRequest(envelope, "C0BT661FYLW", "DEEPSEEK", { allowedBotIds: ["BGEMINI"], ownBotId: "BGEMINI" }),

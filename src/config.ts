@@ -1,6 +1,10 @@
 import "dotenv/config";
 import { endpoints, type ProviderName } from "./providers.js";
-import { isAgentNetworkLabel, parseAgentNetworkPeers } from "./agent-network.js";
+import {
+  isAgentNetworkLabel,
+  parseAgentNetworkPeers,
+  peerIdentityAllowlist,
+} from "./agent-network.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -84,6 +88,10 @@ export const config = {
       peers: agentNetworkPeers,
       controlToken: meshControlToken,
     },
+    // MESH peers are the only bot identities eligible to submit a review
+    // handoff. Human-only flows (implementation, context and mentions) do not
+    // consume this list.
+    allowedBotIds: peerIdentityAllowlist(agentNetworkPeers),
     ownBotId,
   },
   github: {

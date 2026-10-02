@@ -1,7 +1,8 @@
 # MESH/1 — presencia entre agentes de FORNEXA
 
-Estado: propuesto y desactivado por defecto. No está desplegado ni habilita
-revisiones, escritura, merge, despliegues ni acceso a credenciales.
+Estado: activación controlada por instancia. MESH/1 no habilita escritura,
+merge, despliegues ni acceso a credenciales. Cuando está activado, los pares
+MESH explícitos pueden enviar solicitudes de revisión con el formato canónico.
 
 ## Propósito
 
@@ -45,6 +46,11 @@ modelo, reenvíos ni un tercer salto.
 - Un `TRACE` se procesa una vez por instancia y el máximo de saltos es uno.
 - La ruta MESH se procesa antes de las rutas humanas y no se convierte en
   `MODE: IMPLEMENT`, revisión, aprobación o conversación con herramientas.
+- Fuera de MESH, una identidad de par puede abrir solo una revisión mediante el
+  encabezado exacto `<DESTINO> — ACCIÓN REQUERIDA`, un `HEAD` de 40 caracteres y
+  `MODE: MAIN` + `TARGET: main` o `MODE: PR` + `PR #N`. La lista se deriva de
+  `SLACK_AGENT_NETWORK_PEERS`; no hay comodines. Implementación, merge,
+  despliegue, contexto y conversaciones por mención siguen siendo humanos.
 - Slack Events es la vía primaria. El sondeo existente solo reconcilia como
   respaldo raíces que empiezan exactamente por `MESH/1` y hasta veinte mensajes
   por hilo; vuelve a aplicar la misma validación de par, firma e identidad y no
