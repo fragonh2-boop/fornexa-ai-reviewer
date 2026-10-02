@@ -67,3 +67,13 @@ services:
         sync: false
       - key: MESH_CONTROL_TOKEN
         sync: false
+      # Controlador central opcional: sus secretos se configuran solo en
+      # Render y quedan fuera de Git, Slack y los servicios de los modelos.
+      - key: MESH_CONTROLLER_ENABLED
+        value: "false"
+      - key: MESH_CONTROLLER_TOKEN
+        sync: false
+      - key: MESH_CONTROLLER_ORIGIN_URLS
+        sync: false
+      - key: MESH_CONTROLLER_ORIGIN_TOKENS
+        sync: false

@@ -26,6 +26,19 @@ test("the FornexaGPT bridge is disabled by default and validates every active id
   assert.throws(() => loadFornexaGptBridgeConfig({ ...enabledEnv, POLL_INTERVAL_MINUTES: "0" }), /POLL_INTERVAL_MINUTES/);
 });
 
+test("the optional controller requires one private remote control per declared peer", () => {
+  const controllerEnv = {
+    ...enabledEnv,
+    MESH_CONTROLLER_ENABLED: "true",
+    MESH_CONTROLLER_TOKEN: "controller-token",
+    MESH_CONTROLLER_ORIGIN_URLS: JSON.stringify({ CLAUDE: "https://claude.example/mesh/ping" }),
+    MESH_CONTROLLER_ORIGIN_TOKENS: JSON.stringify({ CLAUDE: "peer-control-token" }),
+  };
+  assert.equal(loadFornexaGptBridgeConfig(controllerEnv).controllerOrigins[0].label, "CLAUDE");
+  assert.throws(() => loadFornexaGptBridgeConfig({ ...controllerEnv, MESH_CONTROLLER_ORIGIN_TOKENS: "" }), /MESH_CONTROLLER_ORIGIN_TOKENS/);
+  assert.throws(() => loadFornexaGptBridgeConfig({ ...enabledEnv, MESH_CONTROLLER_ENABLED: "true" }), /MESH_CONTROLLER_TOKEN/);
+});
+
 test("the FornexaGPT fallback polls only bounded canonical MESH/1 messages", async () => {
   let published = "";
   const bridge = new MeshBridge(
