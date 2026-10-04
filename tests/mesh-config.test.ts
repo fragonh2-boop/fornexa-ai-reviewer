@@ -34,3 +34,18 @@ test("MESH/1 refuses to activate without a Slack signing secret", () => {
   const configured = loadConfig({ SLACK_SIGNING_SECRET: "test-signing-secret" });
   assert.equal(configured.status, 0, configured.stderr);
 });
+
+test("la allowlist de revisiones acepta solo identidades Slack explícitas", () => {
+  const explicit = loadConfig({
+    SLACK_SIGNING_SECRET: "test-signing-secret",
+    SLACK_REVIEW_ALLOWED_BOT_IDS: "BGPT,UGPT",
+  });
+  assert.equal(explicit.status, 0, explicit.stderr);
+
+  const wildcard = loadConfig({
+    SLACK_SIGNING_SECRET: "test-signing-secret",
+    SLACK_REVIEW_ALLOWED_BOT_IDS: "*",
+  });
+  assert.notEqual(wildcard.status, 0);
+  assert.match(wildcard.stderr, /sin comodines/);
+});

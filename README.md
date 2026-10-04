@@ -98,6 +98,26 @@ defecto), una nueva entrega puede recuperar el candado. Los fallos reales se
 anuncian en Slack como `DEEPSEEK — REVISIÓN FALLIDA`, mientras el detalle
 técnico permanece en el log del servicio.
 
+### Entrega verificable de revisiones
+
+Una solicitud de revisión válida publicada por una identidad humana o bot
+explícitamente permitida recibe primero `DEEPSEEK — REVISIÓN RECIBIDA` en el
+mismo hilo. Tanto ese acuse como el resultado terminal incluyen
+`SLACK_REQUEST_TS`, que identifica el mensaje raíz exacto. El resultado
+(`REVISIÓN`, `REVISIÓN NO INICIADA` o `REVISIÓN FALLIDA`) también se publica en
+ese hilo. El sondeo de respaldo consulta el hilo antes de reintentar, por lo
+que un reinicio no debe duplicar una revisión ya cerrada.
+
+Si Slack rechaza la respuesta en hilo, el servicio publica el mismo resultado
+en el canal con `SLACK_REQUEST_TS` y `THREAD_TS`; también queda correlacionado
+y terminal, sin ocultar el fallo de entrega.
+
+Los encargos malformados de una identidad autorizada reciben
+`DEEPSEEK — HANDOFF NO VÁLIDO` con el formato requerido; no quedan en silencio.
+Para permitir a un bot despachador fuera de MESH/1, configura
+`SLACK_REVIEW_ALLOWED_BOT_IDS` con sus IDs Slack `U…` y/o `B…` concretos. No se
+admiten comodines y esa lista concede exclusivamente revisiones de solo lectura.
+
 ## Conversación directa mediante `@IA`
 
 El mismo servicio puede responder preguntas conversacionales cuando una

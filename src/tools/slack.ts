@@ -114,6 +114,50 @@ export function findPendingHandoff(
   return null;
 }
 
+/**
+ * The channel history endpoint only returns thread roots. A terminal review is
+ * deliberately posted in the request thread, so polling must inspect that
+ * durable thread state after a restart before deciding to run the review again.
+ */
+export async function findPendingHandoffWithThreadState(
+  messages: SlackMessage[],
+  agentLabel: string,
+  options: BotAllowlistOptions,
+  readThreadState: (threadTs: string, maxMessages: number) => Promise<SlackMessage[]>
+): Promise<(ReviewRequest & { raw: SlackMessage }) | null> {
+  const requestMarker = `${agentLabel} — ACCIÓN REQUERIDA`;
+  let inspectedThreads = 0;
+
+  for (const msg of messages) {
+    if (inspectedThreads >= 50) break;
+    if (!isSenderAllowed({ botId: msg.botId, user: msg.user }, options)) continue;
+    if (msg.threadTs && msg.threadTs !== msg.ts) continue;
+    if (!msg.text.includes(requestMarker)) continue;
+
+    const request = parseReviewRequest(msg.text, agentLabel);
+    if (!request) continue;
+
+    const legacyTerminal = messages.some(
+      (other) => other.ts > msg.ts && isReviewResponseForRequest(other, agentLabel, request)
+    );
+    if (legacyTerminal) continue;
+
+    inspectedThreads += 1;
+    const thread = await readThreadState(msg.ts, 100);
+    const terminalInThread = thread.some(
+      (other) =>
+        other.ts !== msg.ts &&
+        other.threadTs === msg.ts &&
+        isReviewResponseForRequest(other, agentLabel, request, msg.ts)
+    );
+    if (terminalInThread) continue;
+
+    return { ...request, raw: msg };
+  }
+
+  return null;
+}
+
 import { getBotPublisherClient } from "./slack-bot-publisher.js";
 
 export function getEffectiveSlackClient(): WebClient {

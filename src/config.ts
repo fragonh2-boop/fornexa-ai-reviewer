@@ -35,6 +35,21 @@ function booleanValue(name: string, fallback: boolean): boolean {
   throw new Error(`${name} debe ser true o false.`);
 }
 
+function trustedSlackIdentities(name: string, raw: string | undefined): string[] {
+  if (!raw?.trim()) return [];
+
+  const identities = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (identities.some((value) => !/^[UB][A-Z0-9]+$/.test(value))) {
+    throw new Error(`${name} debe contener IDs Slack U… o B… explícitos, sin comodines.`);
+  }
+
+  return [...new Set(identities)];
+}
+
 const provider = (process.env.AI_PROVIDER ?? 'deepseek') as ProviderName;
 if (!Object.hasOwn(endpoints, provider)) throw new Error('Unsupported AI_PROVIDER');
 const prefix = { gpt: 'OPENAI', claude: 'ANTHROPIC', gemini: 'GEMINI', deepseek: 'DEEPSEEK' }[provider];
@@ -49,6 +64,15 @@ const meshControlToken = process.env.MESH_CONTROL_TOKEN?.trim() || null;
 const ownBotId = process.env.SLACK_BOT_ID?.trim() || null;
 const signingSecret = process.env.SLACK_SIGNING_SECRET?.trim() || null;
 const agentLabel = process.env.SLACK_AGENT_LABEL?.trim() || provider.toUpperCase();
+// The dedicated FornexaGPT dispatcher may submit read-only review handoffs
+// even while MESH/1 is disabled. Keep this narrow and explicit: this is not
+// a permission for implementation, deployment, or arbitrary bot messages.
+// SLACK_ALLOWED_BOT_IDS is accepted only as a migration alias for the prior
+// Blueprint key; it intentionally has no wildcard mode.
+const configuredReviewBotIds = trustedSlackIdentities(
+  "SLACK_REVIEW_ALLOWED_BOT_IDS",
+  process.env.SLACK_REVIEW_ALLOWED_BOT_IDS ?? process.env.SLACK_ALLOWED_BOT_IDS
+);
 if (agentNetworkEnabled && (!/^U[A-Z0-9]+$/.test(botUserId ?? "") || !/^B[A-Z0-9]+$/.test(ownBotId ?? ""))) {
   throw new Error("MESH/1 exige SLACK_BOT_USER_ID y SLACK_BOT_ID de la identidad propia.");
 }
@@ -88,10 +112,12 @@ export const config = {
       peers: agentNetworkPeers,
       controlToken: meshControlToken,
     },
-    // MESH peers are the only bot identities eligible to submit a review
-    // handoff. Human-only flows (implementation, context and mentions) do not
-    // consume this list.
-    allowedBotIds: peerIdentityAllowlist(agentNetworkPeers),
+    // Explicit MESH peers and the narrow review dispatcher allowlist are the
+    // only bot identities eligible to submit a review handoff. Human-only
+    // flows (implementation, context and mentions) do not consume this list.
+    allowedBotIds: [
+      ...new Set([...peerIdentityAllowlist(agentNetworkPeers), ...configuredReviewBotIds]),
+    ],
     ownBotId,
   },
   github: {

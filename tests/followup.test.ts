@@ -36,6 +36,24 @@ test('diagnostics redact content, deduplicate concurrent events and limit pollin
   assert.equal(sent.length,3);
   await report({...message,ts:'1'});assert.equal(sent.length,3);
 });
+test('diagnostics reports a malformed handoff from an explicitly trusted bot', async () => {
+  const sent: string[]=[];
+  const report=createDiagnosticReporter(
+    'DEEPSEEK',
+    async text=>{sent.push(text);},
+    ()=>1_000_000,
+    {allowedBotIds:['BFORNEXAGPT']}
+  );
+  const malformed={
+    botId:'BFORNEXAGPT',
+    user:'UFORNEXAGPT',
+    ts:'1000',
+    text:'DEEPSEEK — ACCIÓN REQUERIDA\nMODE: PR / READ-ONLY\nPR: #89',
+  };
+  assert.equal(await report(malformed),true);
+  assert.equal(sent.length,1);
+  assert.match(sent[0],/^DEEPSEEK — HANDOFF NO VÁLIDO/);
+});
 test('phase-zero onboarding is exclusively DeepSeek until its protocol is generalized', () => {
   for(const name of ['gpt','claude','gemini'] as const) assert.equal(supportsLegacyOnboarding(name),false);
   assert.equal(supportsLegacyOnboarding('deepseek'),true);
