@@ -5,7 +5,7 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
 import {
   readRecentHistory,
-  findPendingHandoff,
+  findPendingHandoffWithThreadState,
   postToChannel,
   postToThread,
   readThread,
@@ -80,9 +80,38 @@ const botReviewRequestOptions = {
 const reportMalformed = createDiagnosticReporter(
   config.slack.agentLabel,
   postToThread,
-  Date.now
+  Date.now,
+  botReviewRequestOptions
 );
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
+
+interface ReviewDelivery {
+  requestTs: string;
+  threadTs: string;
+}
+
+function withReviewCorrelation(text: string, delivery?: ReviewDelivery): string {
+  if (!delivery) return text;
+  const [firstLine, ...rest] = text.split("\n");
+  return [firstLine, `SLACK_REQUEST_TS: ${delivery.requestTs}`, ...rest].join("\n");
+}
+
+async function postReviewUpdate(text: string, delivery?: ReviewDelivery): Promise<void> {
+  const correlated = withReviewCorrelation(text, delivery);
+  if (!delivery) {
+    await postToChannel(correlated);
+    return;
+  }
+
+  try {
+    await postToThread(correlated, delivery.threadTs);
+  } catch (error) {
+    if (!isCannotReplyToMessageError(error)) throw error;
+    await postToChannel(
+      `${correlated}\n\nTHREAD_TS: ${delivery.threadTs}\n_Respuesta publicada en el canal porque Slack no admite respuestas en ese mensaje._`
+    );
+  }
+}
 
 function createMeshBridge(): MeshBridge {
   return new MeshBridge(
@@ -139,7 +168,10 @@ async function publishNonReplyableMentionFailure(
   );
 }
 
-async function processReviewRequest(request: ReviewRequest): Promise<void> {
+async function processReviewRequest(
+  request: ReviewRequest,
+  delivery?: ReviewDelivery
+): Promise<void> {
   const targetLabel = request.target === "pr" ? `pr:${request.prNumber}` : `ref:${request.ref}`;
   const reviewKey = `${targetLabel}:${request.requestedHead}`;
   const lock = acquireLock(inFlightReviews, reviewKey, staleLockMs);
@@ -154,6 +186,13 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
   }
 
   try {
+    await postReviewUpdate(
+      `${config.slack.agentLabel} — REVISIÓN RECIBIDA\n\n` +
+        `Solicitud aceptada para ${targetLabel}, HEAD \`${request.requestedHead}\`. ` +
+        "Se publicará un resultado terminal en este hilo.",
+      delivery
+    );
+
     if (request.target === "pr") {
       console.log(
         `[${new Date().toISOString()}] Handoff detectado: PR #${request.prNumber}, HEAD ${request.requestedHead}. Revisando...`
@@ -162,8 +201,9 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
       const ctx = await getPRContext(request.prNumber);
       if (ctx.headSha.toLowerCase() !== request.requestedHead) {
         if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
-        await postToChannel(
-          `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nPR #${ctx.number}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con el SHA actual; no se ha revisado un diff distinto del solicitado._`
+        await postReviewUpdate(
+          `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nPR #${ctx.number}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con el SHA actual; no se ha revisado un diff distinto del solicitado._`,
+          delivery
         );
         console.log(
           `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en PR #${request.prNumber}.`
@@ -176,7 +216,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
       const body = `${config.slack.agentLabel} — REVISIÓN\n\nPR #${ctx.number}: ${ctx.title}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
 
       if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
-      await postToChannel(body);
+      await postReviewUpdate(body, delivery);
       console.log(`[${new Date().toISOString()}] Veredicto publicado en Slack para PR #${request.prNumber}.`);
       return;
     }
@@ -188,8 +228,9 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
     const ctx = await getRefContext(request.ref);
     if (ctx.headSha.toLowerCase() !== request.requestedHead) {
       if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
-      await postToChannel(
-        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nTARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`
+      await postReviewUpdate(
+        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nTARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`,
+        delivery
       );
       console.log(
         `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en TARGET ${request.ref}.`
@@ -200,7 +241,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
     const verdict = await reviewRepository(ctx, request.instructions);
     const body = `${config.slack.agentLabel} — REVISIÓN\n\nTARGET: ${ctx.ref}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
     if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
-    await postToChannel(body);
+    await postReviewUpdate(body, delivery);
     console.log(`[${new Date().toISOString()}] Revisión de estado publicada para TARGET ${ctx.ref}.`);
   } catch (err) {
     if (ownsLock(inFlightReviews, reviewKey, lock.startedAt)) {
@@ -208,7 +249,7 @@ async function processReviewRequest(request: ReviewRequest): Promise<void> {
         request.target === "pr"
           ? `PR #${request.prNumber}: la revisión del HEAD \`${request.requestedHead}\` falló antes de completarse.`
           : `TARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: la revisión falló antes de completarse.`;
-      await notifyFailure(scope);
+      await notifyFailure(scope, delivery);
     }
     throw err;
   } finally {
@@ -432,10 +473,11 @@ async function findPendingMention(messages: SlackMessage[]): Promise<{
   return null;
 }
 
-async function notifyFailure(scope: string): Promise<void> {
+async function notifyFailure(scope: string, delivery?: ReviewDelivery): Promise<void> {
   try {
-    await postToChannel(
-      `${config.slack.agentLabel} — REVISIÓN FALLIDA\n\n${scope}\n\n_El detalle técnico se conserva en el log del servicio. El candado se liberará para permitir un reintento seguro._`
+    await postReviewUpdate(
+      `${config.slack.agentLabel} — REVISIÓN FALLIDA\n\n${scope}\n\n_El detalle técnico se conserva en el log del servicio. El candado se liberará para permitir un reintento seguro._`,
+      delivery
     );
   } catch (notificationError) {
     console.error("No se pudo publicar el aviso de fallo en Slack:", notificationError);
@@ -480,18 +522,22 @@ async function tick(): Promise<void> {
     });
   }
   for (const message of messages) {
-    if (message.botId) continue;
     if (await reportMalformed(message)) continue;
+    if (message.botId) continue;
     if (await processImplementation(message)) break;
   }
-  const pending = findPendingHandoff(
+  const pending = await findPendingHandoffWithThreadState(
     messages,
     config.slack.agentLabel,
-    botReviewRequestOptions
+    botReviewRequestOptions,
+    readThread
   );
 
   if (pending) {
-    await processReviewRequest(pending);
+    await processReviewRequest(pending, {
+      requestTs: pending.raw.ts,
+      threadTs: pending.raw.threadTs ?? pending.raw.ts,
+    });
     return;
   }
 
@@ -574,8 +620,14 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
 
   if (envelope.event_id && !rememberEvent(envelope.event_id)) return;
 
+  const reviewSenderMessage = extractHumanMessage(
+    envelope,
+    config.slack.channelId,
+    botReviewRequestOptions
+  );
+  if (reviewSenderMessage && await reportMalformed(reviewSenderMessage)) return;
+
   const humanMessage = extractHumanMessage(envelope, config.slack.channelId);
-  if (humanMessage && await reportMalformed(humanMessage)) return;
   if (humanMessage && /^MODE:\s*IMPLEMENT\s*$/m.test(humanMessage.text)) {
     setImmediate(() => { processImplementation(humanMessage).catch(() => console.error('Implementation failed; checkpoint retained')); });
     return;
@@ -598,9 +650,15 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
   );
   if (request) {
     setImmediate(() => {
-      processReviewRequest(request).catch((err) =>
-        console.error("Error procesando el evento de Slack:", err)
-      );
+      processReviewRequest(request, {
+        requestTs: reviewSenderMessage?.ts ?? envelope.event?.ts ?? "unknown",
+        threadTs:
+          reviewSenderMessage?.threadTs ??
+          envelope.event?.thread_ts ??
+          reviewSenderMessage?.ts ??
+          envelope.event?.ts ??
+          "unknown",
+      }).catch((err) => console.error("Error procesando el evento de Slack:", err));
     });
     return;
   }

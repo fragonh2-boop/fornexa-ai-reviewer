@@ -32,11 +32,14 @@ export function isReviewResponse(
 export function isReviewResponseForRequest(
   message: { text: string; botId?: string },
   agentLabel: string,
-  request: ReviewRequest
+  request: ReviewRequest,
+  requestTs?: string
 ): boolean {
   if (!isReviewResponse(message, agentLabel) || !message.text.includes(request.requestedHead)) {
     return false;
   }
+
+  if (requestTs && !message.text.includes(`SLACK_REQUEST_TS: ${requestTs}`)) return false;
 
   return request.target === "pr"
     ? message.text.includes(`PR #${request.prNumber}:`)
