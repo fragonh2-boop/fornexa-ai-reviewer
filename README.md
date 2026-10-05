@@ -108,9 +108,21 @@ mismo hilo. Tanto ese acuse como el resultado terminal incluyen
 ese hilo. El sondeo de respaldo consulta el hilo antes de reintentar, por lo
 que un reinicio no debe duplicar una revisión ya cerrada.
 
+Las revisiones largas se dividen en partes de hasta 3800 caracteres, incluido
+el sufijo `Respuesta n/N`. Cada parte repite el encabezado, `SLACK_REQUEST_TS`
+y el ámbito/HEAD revisado; solo la última puede cerrar la solicitud. El sondeo
+también reconoce secuencias históricas completas del mismo bot/hilo sin
+reabrirlas por comentarios ajenos intercalados. La correlación nueva exige
+el TS exacto en la segunda línea, no una coincidencia parcial en el cuerpo.
+
 Si Slack rechaza la respuesta en hilo, el servicio publica el mismo resultado
 en el canal con `SLACK_REQUEST_TS` y `THREAD_TS`; también queda correlacionado
 y terminal, sin ocultar el fallo de entrega.
+
+Ese fallback conserva los metadatos en todas sus partes. Las solicitudes
+`ACCIÓN REQUERIDA` al canal no se dividen en raíces independientes, para
+mantener juntas sus instrucciones. Evidencia de regresión y comprobaciones
+pendientes: [fragmentación de revisiones](docs/slack-review-fragments-verification.md).
 
 Los encargos malformados de una identidad autorizada reciben
 `DEEPSEEK — HANDOFF NO VÁLIDO` con el formato requerido; no quedan en silencio.
