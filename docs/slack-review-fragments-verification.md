@@ -22,6 +22,14 @@ completa, ordenada y del mismo bot/hilo no vuelve a ejecutarse. Los
 comentarios ajenos intercalados no alteran esa comprobación. Secuencias
 incompletas, índices inválidos o metadatos de otra solicitud no cierran.
 
+La recuperación legacy exige `botId` y `threadTs` coincidentes, pero no
+reconstruye metadatos que el formato antiguo omitía. Una continuación sin
+encabezado ni `SLACK_REQUEST_TS` no permite distinguir otra secuencia del
+mismo bot/hilo si su primer fragmento falta en la captura. Es compatibilidad
+heurística, no una garantía de procedencia por parte; otro bot/hilo queda
+excluido. Las partes nuevas repiten la correlación explícita para evitar
+depender de esa atribución legacy.
+
 ## Evidencia local verificable
 
 Entorno: Node.js `v24.19.0`, dependencias del lockfile instaladas con
