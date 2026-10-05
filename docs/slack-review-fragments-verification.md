@@ -17,6 +17,10 @@ conversacionales conservan su comportamiento. Las solicitudes largas al
 canal permanecen en una sola raíz; solo las revisiones correlacionadas usan
 la nueva fragmentación de fallback.
 
+El publicador en hilo ignora strings vacíos o compuestos solo por whitespace
+antes de obtener el cliente Slack. Los strings con contenido mantienen su
+texto exacto; los arrays preformateados conservan su semántica anterior.
+
 Se mantiene compatibilidad con revisiones históricas: una secuencia 1..N
 completa, ordenada y del mismo bot/hilo no vuelve a ejecutarse. Los
 comentarios ajenos intercalados no alteran esa comprobación. Secuencias
@@ -38,16 +42,19 @@ los publicadores de las regresiones están simulados con `node:test`.
 
 | Control | Resultado |
 | --- | --- |
-| `node --import tsx --test tests/slack-message-parts.test.ts` | 27/27, sin omisiones |
-| `npm test` | 137/137, sin fallos ni omisiones |
+| `node --import tsx --test tests/slack-message-parts.test.ts` | 32/32, sin omisiones |
+| `npm test` | 142/142, sin fallos ni omisiones; ejecutado fuera del sandbox solo por el IPC de tsx |
 | `npm run build` | Correcto; TypeScript compila |
 | `git diff --check` | Correcto |
-| Revisión independiente del diff | Sin bloqueantes tras corregir los hallazgos |
+| Revisión independiente del diff | Pendiente de renovar ambos dictámenes sobre el HEAD corregido |
 
 Cobertura: CLAUDE/GEMINI/DEEPSEEK; éxito, rechazo y fallo; ámbitos main y PR;
 TS exacto frente a prefijos y citas; límite incluyendo sufijo; cuerpo y orden;
 recuperación legacy; solicitud larga intacta; fallback; fallo de publicación
 intermedia; cierre solo en parte final; arrays sin doble fragmentación.
+Las cinco regresiones adicionales cubren strings vacíos/whitespace, texto
+corto exacto, arrays intactos, TS moderno ajeno del mismo bot/hilo y el límite
+legacy explícito: sin metadatos puede cerrar una continuación ajena.
 
 La CI del repositorio ejecuta `npm ci`, `npm test` y `npm run build` en Node.js
 22. Su resultado debe comprobarse sobre el HEAD exacto de la PR.

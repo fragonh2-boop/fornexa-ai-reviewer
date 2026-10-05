@@ -182,6 +182,7 @@ export async function postToChannel(text: string): Promise<string> {
 }
 
 export async function postToThreadSmart(text: string | string[], threadTs: string): Promise<void> {
+  if (typeof text === "string" && text.trim().length === 0) return;
   const client = getEffectiveSlackClient();
   const chunks = Array.isArray(text) ? text : formatSlackMessageParts(text);
   for (const chunk of chunks) {

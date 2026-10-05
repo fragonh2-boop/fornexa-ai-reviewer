@@ -21,6 +21,31 @@ function messages(parts: string[]) {
   return parts.map((text, i) => ({ text, ts: `2000.${String(i + 1).padStart(6, "0")}`, threadTs: requestTs, botId: "BREVIEWER" }));
 }
 
+test("el publicador no envía strings vacíos ni compuestos solo por whitespace", async (t) => {
+  let calls = 0;
+  t.mock.method(getEffectiveSlackClient().chat, "postMessage", async () => {
+    calls += 1;
+    return { ok: true, ts: "2000.1" };
+  });
+  for (const text of ["", " ", "\t", "\n \t\r\n"]) {
+    await postToThreadSmart(text, requestTs);
+  }
+  assert.equal(calls, 0);
+});
+
+test("el publicador conserva un string corto no vacío sin recortar su texto", async (t) => {
+  const sent: Array<{ text: string; thread_ts: string }> = [];
+  t.mock.method(getEffectiveSlackClient().chat, "postMessage", async (message: { text: string; thread_ts: string }) => {
+    sent.push(message);
+    return { ok: true, ts: "2000.1" };
+  });
+  const text = " \nRespuesta corta\t ";
+  await postToThreadSmart(text, requestTs);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, text);
+  assert.equal(sent[0].thread_ts, requestTs);
+});
+
 test("cada fragmento publicado conserva correlación, SHA y ámbito en el mismo hilo", async (t) => {
   const sent: Array<{ text: string; thread_ts: string }> = [];
   t.mock.method(getEffectiveSlackClient().chat, "postMessage", async (message: { text: string; thread_ts: string }) => {
@@ -128,6 +153,27 @@ test("no mezcla una continuación moderna de otra solicitud con la secuencia his
   assert.equal(isReviewThreadComplete(mixed, "CLAUDE", mainRequest, requestTs), false);
 });
 
+test("un fragmento final moderno de otra solicitud no cierra aunque comparta bot e hilo", () => {
+  const parts = messages(formatSlackMessageParts(review));
+  const mixed = parts.map((part, i) => i === parts.length - 1 ? {
+    ...part,
+    text: part.text.replace(requestTs, "1000.999999"),
+  } : part);
+  assert.ok(mixed.every((part) => part.botId === "BREVIEWER" && part.threadTs === requestTs));
+  assert.equal(isReviewThreadComplete(mixed, "CLAUDE", mainRequest, requestTs), false);
+});
+
+test("la recuperación histórica puede cerrar con una continuación ajena sin metadatos del mismo bot e hilo", () => {
+  // El formato antiguo no conserva la solicitud de las continuaciones: si la
+  // primera parte de otra secuencia falta, estos datos no permiten distinguirla.
+  const ambiguous = [
+    legacyParts[0],
+    { ...legacyParts[1], text: "unheaded continuation from another sequence\n\n_Respuesta 2/3_" },
+    { ...legacyParts[2], text: "unheaded final from another sequence\n\n_Respuesta 3/3_" },
+  ];
+  assert.equal(isReviewThreadComplete(ambiguous, "CLAUDE", mainRequest, requestTs), true);
+});
+
 for (const size of [3799, 3800, 3801, 7600]) {
   test(`un mensaje genérico de ${size} caracteres no inventa correlación ni excede el límite`, () => {
     const text = "x".repeat(size);
@@ -198,6 +244,17 @@ test("los arrays previamente formateados no se fragmentan por segunda vez", asyn
     return { ok: true, ts: "2000.1" };
   });
   const parts = formatSlackMessageParts(review);
+  await postToThreadSmart(parts, requestTs);
+  assert.deepEqual(sent, parts);
+});
+
+test("el guard de strings vacíos conserva la semántica de los arrays preformateados", async (t) => {
+  const sent: string[] = [];
+  t.mock.method(getEffectiveSlackClient().chat, "postMessage", async (message: { text: string }) => {
+    sent.push(message.text);
+    return { ok: true, ts: "2000.1" };
+  });
+  const parts = ["", " \t\n", "preformatted reply"];
   await postToThreadSmart(parts, requestTs);
   assert.deepEqual(sent, parts);
 });
