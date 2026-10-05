@@ -1,9 +1,9 @@
 import { WebClient } from "@slack/web-api";
 import { config } from "../config.js";
-import { splitSlackText } from "../context-onboarding.js";
-import { formatMentionResponseParts } from "../slack-mentions.js";
+import { formatSlackMessageParts, isCorrelatedReviewResponse } from "../slack-message-parts.js";
 import {
   isReviewResponseForRequest,
+  isReviewThreadComplete,
   parseReviewRequest,
   type ReviewRequest,
 } from "../review-request.js";
@@ -144,12 +144,7 @@ export async function findPendingHandoffWithThreadState(
 
     inspectedThreads += 1;
     const thread = await readThreadState(msg.ts, 100);
-    const terminalInThread = thread.some(
-      (other) =>
-        other.ts !== msg.ts &&
-        other.threadTs === msg.ts &&
-        isReviewResponseForRequest(other, agentLabel, request, msg.ts)
-    );
+    const terminalInThread = isReviewThreadComplete(thread, agentLabel, request, msg.ts);
     if (terminalInThread) continue;
 
     return { ...request, raw: msg };
@@ -166,13 +161,20 @@ export function getEffectiveSlackClient(): WebClient {
 
 export async function postToChannelSmart(text: string): Promise<string> {
   const client = getEffectiveSlackClient();
-  const result = await client.chat.postMessage({
-    channel: config.slack.channelId,
-    text,
-    unfurl_links: false,
-  });
-  if (!result.ts) throw new Error("Slack no devolvió ts al publicar un mensaje.");
-  return result.ts;
+  // Dispatch requests must remain one root so no instructions are detached.
+  const chunks = isCorrelatedReviewResponse(text) ? formatSlackMessageParts(text) : [text];
+  let firstTs: string | undefined;
+  for (const chunk of chunks) {
+    const result = await client.chat.postMessage({
+      channel: config.slack.channelId,
+      text: chunk,
+      unfurl_links: false,
+    });
+    if (!result.ts) throw new Error("Slack no devolvió ts al publicar un mensaje.");
+    firstTs ??= result.ts;
+  }
+  if (!firstTs) throw new Error("Slack no devolvió ts al publicar un mensaje.");
+  return firstTs;
 }
 
 export async function postToChannel(text: string): Promise<string> {
@@ -181,25 +183,7 @@ export async function postToChannel(text: string): Promise<string> {
 
 export async function postToThreadSmart(text: string | string[], threadTs: string): Promise<void> {
   const client = getEffectiveSlackClient();
-  let chunks: string[];
-  if (Array.isArray(text)) {
-    chunks = text;
-  } else {
-    const mentionMatch = text.match(
-      /^([A-Z]+ — RESPUESTA)\n(SLACK_REQUEST_TS: [^\n]+)\n\n([\s\S]*)$/
-    );
-    if (mentionMatch && text.length > 3800) {
-      const agentLabel = mentionMatch[1].replace(" — RESPUESTA", "").trim();
-      const requestTs = mentionMatch[2].replace("SLACK_REQUEST_TS:", "").trim();
-      chunks = formatMentionResponseParts(agentLabel, requestTs, mentionMatch[3]);
-    } else {
-      const rawChunks = splitSlackText(text);
-      chunks = rawChunks.map((chunk, index) => {
-        const suffix = rawChunks.length > 1 ? `\n\n_Respuesta ${index + 1}/${rawChunks.length}_` : "";
-        return `${chunk}${suffix}`;
-      });
-    }
-  }
+  const chunks = Array.isArray(text) ? text : formatSlackMessageParts(text);
   for (const chunk of chunks) {
     await client.chat.postMessage({
       channel: config.slack.channelId,

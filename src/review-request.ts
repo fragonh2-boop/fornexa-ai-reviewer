@@ -15,11 +15,25 @@ export interface RefReviewRequest extends BaseReviewRequest {
 
 export type ReviewRequest = PRReviewRequest | RefReviewRequest;
 
+function reviewPart(text: string): { index: number; total: number; body: string } | null {
+  const match = text.match(/\n\n_Respuesta ([^\n]*)_\s*$/);
+  if (!match) return null;
+  const numbers = match[1].match(/^(\d+)\/(\d+)$/);
+  const index = Number(numbers?.[1]);
+  const total = Number(numbers?.[2]);
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(total) || index < 1 || total < 1 || index > total) {
+    return { index: 0, total: 0, body: text };
+  }
+  return { index, total, body: text.slice(0, match.index) };
+}
+
 export function isReviewResponse(
   message: { text: string; botId?: string },
   agentLabel: string
 ): boolean {
   if (!message.botId) return false;
+  const part = reviewPart(message.text);
+  if (part && (part.index === 0 || part.index !== part.total)) return false;
 
   const firstLine = message.text.split("\n", 1)[0].trim();
   return (
@@ -27,6 +41,44 @@ export function isReviewResponse(
     firstLine === `${agentLabel} — REVISIÓN NO INICIADA` ||
     firstLine === `${agentLabel} — REVISIÓN FALLIDA`
   );
+}
+
+/**
+ * New parts close only on their correlated final message. Complete legacy
+ * 1..N groups are still recognized so a rollout does not replay old reviews;
+ * a missing, mixed-author or out-of-order legacy part never closes the root.
+ */
+export function isReviewThreadComplete(
+  messages: Array<{ ts: string; text: string; botId?: string; threadTs?: string }>,
+  agentLabel: string,
+  request: ReviewRequest,
+  requestTs: string
+): boolean {
+  const replies = messages
+    .filter((message) => message.ts !== requestTs && message.threadTs === requestTs)
+    .sort((left, right) => Number(left.ts) - Number(right.ts));
+  if (replies.some((message) => isReviewResponseForRequest(message, agentLabel, request, requestTs))) {
+    return true;
+  }
+
+  for (const [offset, first] of replies.entries()) {
+    const part = reviewPart(first.text);
+    if (!part || part.index !== 1 || part.total < 2 || part.total > replies.length - offset) continue;
+    if (!isReviewResponseForRequest({ ...first, text: part.body }, agentLabel, request, requestTs)) continue;
+    const group = replies.slice(offset)
+      .filter((message) => message.botId === first.botId && reviewPart(message.text))
+      .slice(0, part.total);
+    if (group.length !== part.total) continue;
+    const complete = group.every((message, index) => {
+      const current = reviewPart(message.text);
+      if (message.botId !== first.botId || current?.index !== index + 1 || current.total !== part.total) return false;
+      // Modern headers, if present, must still belong to this exact request.
+      const hasHeader = /^[A-Z][A-Z0-9_-]* — REVISIÓN/.test(message.text);
+      return !hasHeader || isReviewResponseForRequest({ ...message, text: current.body }, agentLabel, request, requestTs);
+    });
+    if (complete) return true;
+  }
+  return false;
 }
 
 export function isReviewResponseForRequest(
@@ -39,7 +91,7 @@ export function isReviewResponseForRequest(
     return false;
   }
 
-  if (requestTs && !message.text.includes(`SLACK_REQUEST_TS: ${requestTs}`)) return false;
+  if (requestTs && message.text.split("\n")[1] !== `SLACK_REQUEST_TS: ${requestTs}`) return false;
 
   return request.target === "pr"
     ? message.text.includes(`PR #${request.prNumber}:`)
