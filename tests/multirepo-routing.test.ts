@@ -27,6 +27,7 @@ const {
 } = await import("../src/tools/orchestration.js");
 
 const { formatSlackMessageParts } = await import("../src/slack-message-parts.js");
+const { findPendingHandoffWithThreadState } = await import("../src/tools/slack.js");
 
 test("allowlist: solo permite repositorios autorizados de forma estricta y normalizada", () => {
   assert.equal(isRepositoryAllowed("fragonh2-boop/fornexa-ai-reviewer"), true);
@@ -348,4 +349,272 @@ test("7. formatSlackMessageParts: conserva encabezado Repo en cada fragmento div
       `La parte ${index + 1} debe conservar el SLACK_REQUEST_TS`
     );
   }
+});
+
+test("8. Terminal de rechazo para repo fuera de allowlist (target PR): correlaciona exactamente y valida correspondencia", () => {
+  const req = {
+    repository: "unauthorized-org/unauthorized-repo",
+    target: "pr" as const,
+    prNumber: 99,
+    requestedHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    instructions: "",
+  };
+
+  const requestTs = "1791254100.123456";
+
+  const targetScope = `PR #${req.prNumber}: HEAD solicitado \`${req.requestedHead}\``;
+  const rejectionText = [
+    "DEEPSEEK — REVISIÓN NO INICIADA",
+    `SLACK_REQUEST_TS: ${requestTs}`,
+    "",
+    `Repo: ${req.repository}`,
+    `${targetScope}: repositorio no autorizado: \`${req.repository}\`.`,
+    "",
+    "_Solo se admiten repositorios autorizados en la allowlist cerrada._",
+  ].join("\n");
+
+  const matchingResponse = {
+    botId: "BDEEPSEEK",
+    text: rejectionText,
+  };
+
+  // Positivo: correlación exacta
+  assert.equal(
+    isReviewResponseForRequest(matchingResponse, "DEEPSEEK", req, requestTs),
+    true,
+    "El mensaje terminal de rechazo debe correlacionar con la solicitud PR no autorizada"
+  );
+
+  // Negativo: diferente SHA
+  const mismatchShaResponse = {
+    botId: "BDEEPSEEK",
+    text: rejectionText.replace(req.requestedHead, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+  };
+  assert.equal(
+    isReviewResponseForRequest(mismatchShaResponse, "DEEPSEEK", req, requestTs),
+    false,
+    "No debe aceptar rechazo con SHA distinto"
+  );
+
+  // Negativo: diferente Repo en el mensaje
+  const mismatchRepoResponse = {
+    botId: "BDEEPSEEK",
+    text: rejectionText.replaceAll(req.repository, "other-org/other-repo"),
+  };
+  assert.equal(
+    isReviewResponseForRequest(mismatchRepoResponse, "DEEPSEEK", req, requestTs),
+    false,
+    "No debe aceptar rechazo con repositorio distinto"
+  );
+
+  // Negativo: diferente PR number
+  const mismatchPrResponse = {
+    botId: "BDEEPSEEK",
+    text: rejectionText.replace(`PR #${req.prNumber}:`, "PR #100:"),
+  };
+  assert.equal(
+    isReviewResponseForRequest(mismatchPrResponse, "DEEPSEEK", req, requestTs),
+    false,
+    "No debe aceptar rechazo con PR number distinto"
+  );
+
+  // Negativo: diferente requestTs
+  assert.equal(
+    isReviewResponseForRequest(matchingResponse, "DEEPSEEK", req, "1791254999.999999"),
+    false,
+    "No debe aceptar rechazo con SLACK_REQUEST_TS distinto"
+  );
+});
+
+test("9. Terminal de rechazo para repo fuera de allowlist (target REF): correlaciona exactamente y valida correspondencia", () => {
+  const req = {
+    repository: "unauthorized-org/unauthorized-repo",
+    target: "ref" as const,
+    ref: "experimental-branch",
+    requestedHead: "1111222233334444555566667777888899990000",
+    instructions: "",
+  };
+
+  const requestTs = "1791254200.654321";
+
+  const targetScope = `TARGET: ${req.ref}\nHEAD \`${req.requestedHead}\``;
+  const rejectionText = [
+    "DEEPSEEK — REVISIÓN NO INICIADA",
+    `SLACK_REQUEST_TS: ${requestTs}`,
+    "",
+    `Repo: ${req.repository}`,
+    `${targetScope}: repositorio no autorizado: \`${req.repository}\`.`,
+    "",
+    "_Solo se admiten repositorios autorizados en la allowlist cerrada._",
+  ].join("\n");
+
+  const matchingResponse = {
+    botId: "BDEEPSEEK",
+    text: rejectionText,
+  };
+
+  // Positivo: correlación exacta
+  assert.equal(
+    isReviewResponseForRequest(matchingResponse, "DEEPSEEK", req, requestTs),
+    true,
+    "El mensaje terminal de rechazo debe correlacionar con la solicitud TARGET ref no autorizada"
+  );
+
+  // Negativo: diferente SHA
+  const mismatchShaResponse = {
+    botId: "BDEEPSEEK",
+    text: rejectionText.replace(req.requestedHead, "ffffffffffffffffffffffffffffffffffffffff"),
+  };
+  assert.equal(
+    isReviewResponseForRequest(mismatchShaResponse, "DEEPSEEK", req, requestTs),
+    false,
+    "No debe aceptar rechazo con SHA distinto"
+  );
+
+  // Negativo: diferente TARGET ref
+  const mismatchRefResponse = {
+    botId: "BDEEPSEEK",
+    text: rejectionText.replace(`TARGET: ${req.ref}`, "TARGET: other-branch"),
+  };
+  assert.equal(
+    isReviewResponseForRequest(mismatchRefResponse, "DEEPSEEK", req, requestTs),
+    false,
+    "No debe aceptar rechazo con ref distinto"
+  );
+
+  // Negativo: diferente Repo
+  const mismatchRepoResponse = {
+    botId: "BDEEPSEEK",
+    text: rejectionText.replaceAll(req.repository, "other-org/other-repo"),
+  };
+  assert.equal(
+    isReviewResponseForRequest(mismatchRepoResponse, "DEEPSEEK", req, requestTs),
+    false,
+    "No debe aceptar rechazo con repositorio distinto"
+  );
+
+  // Negativo: diferente requestTs
+  assert.equal(
+    isReviewResponseForRequest(matchingResponse, "DEEPSEEK", req, "1791254999.000000"),
+    false,
+    "No debe aceptar rechazo con SLACK_REQUEST_TS distinto"
+  );
+});
+
+test("10. Sondeo con mocks (findPendingHandoffWithThreadState): el rechazo correlacionado cierra la raíz y evita reprocesamiento continuo", async () => {
+  const unauthorizedRepo = "attacker/malicious-repo";
+  const requestedHead = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+  const rootTs = "1791254300.000100";
+
+  const requestText = [
+    "DEEPSEEK — ACCIÓN REQUERIDA",
+    "MODE: PR",
+    `Repo: ${unauthorizedRepo}`,
+    "PR #77",
+    `HEAD: ${requestedHead}`,
+  ].join("\n");
+
+  const rootMessage = {
+    ts: rootTs,
+    text: requestText,
+    user: "UFORNEXAGPT",
+    botId: "BFORNEXAGPT",
+  };
+
+  const allowedOptions = { allowedBotIds: ["BFORNEXAGPT"] };
+
+  // 10a: Hilo antes de emitir respuesta terminal -> debe ser detectado como pendiente
+  const pendingBefore = await findPendingHandoffWithThreadState(
+    [rootMessage],
+    "DEEPSEEK",
+    allowedOptions,
+    async () => [rootMessage]
+  );
+  assert.ok(pendingBefore, "La solicitud debe ser detectada como pendiente antes de la respuesta");
+  assert.equal(pendingBefore.raw.ts, rootTs);
+  assert.equal(pendingBefore.repository, unauthorizedRepo);
+
+  // 10b: Comportamiento antiguo defectuoso (sin SHA / PR) -> sigue pendiente y causaría bucle de rechazo
+  const uncorrelatedRejection = {
+    ts: "1791254305.000100",
+    threadTs: rootTs,
+    botId: "BDEEPSEEK",
+    text: [
+      "DEEPSEEK — REVISIÓN NO INICIADA",
+      `SLACK_REQUEST_TS: ${rootTs}`,
+      "",
+      `Repositorio no autorizado: \`${unauthorizedRepo}\`.`,
+      "",
+      "_Solo se admiten repositorios autorizados en la allowlist cerrada._",
+    ].join("\n"),
+  };
+  const pendingWithUncorrelated = await findPendingHandoffWithThreadState(
+    [rootMessage],
+    "DEEPSEEK",
+    allowedOptions,
+    async () => [rootMessage, uncorrelatedRejection]
+  );
+  assert.ok(
+    pendingWithUncorrelated,
+    "El rechazo no correlacionado fallaba en cerrar la raíz (defecto confirmado que causaba repetición)"
+  );
+
+  // 10c: Nuevo rechazo correlacionado -> cierra la raíz de forma definitiva (retorna null)
+  const targetScope = `PR #77: HEAD solicitado \`${requestedHead}\``;
+  const correlatedRejection = {
+    ts: "1791254305.000100",
+    threadTs: rootTs,
+    botId: "BDEEPSEEK",
+    text: [
+      "DEEPSEEK — REVISIÓN NO INICIADA",
+      `SLACK_REQUEST_TS: ${rootTs}`,
+      "",
+      `Repo: ${unauthorizedRepo}`,
+      `${targetScope}: repositorio no autorizado: \`${unauthorizedRepo}\`.`,
+      "",
+      "_Solo se admiten repositorios autorizados en la allowlist cerrada._",
+    ].join("\n"),
+  };
+  const pendingAfterCorrelated = await findPendingHandoffWithThreadState(
+    [rootMessage],
+    "DEEPSEEK",
+    allowedOptions,
+    async () => [rootMessage, correlatedRejection]
+  );
+  assert.equal(
+    pendingAfterCorrelated,
+    null,
+    "El rechazo correlacionado debe cerrar el hilo y evitar reprocesamiento continuo en sondeos futuros"
+  );
+
+  // 10d: Una solicitud válida posterior no queda bloqueada por la solicitud rechazada y cerrada
+  const validRootTs = "1791254310.000200";
+  const validRequestText = [
+    "DEEPSEEK — ACCIÓN REQUERIDA",
+    "MODE: PR",
+    "Repo: fragonh2-boop/fornexa-ai-reviewer",
+    "PR #36",
+    "HEAD: be52fb50b7f9219ae2fdb8ef8d6bb90436561b21",
+  ].join("\n");
+  const validRootMessage = {
+    ts: validRootTs,
+    text: validRequestText,
+    user: "UFORNEXAGPT",
+    botId: "BFORNEXAGPT",
+  };
+
+  const nextPending = await findPendingHandoffWithThreadState(
+    [rootMessage, validRootMessage],
+    "DEEPSEEK",
+    allowedOptions,
+    async (threadTs) => {
+      if (threadTs === rootTs) {
+        return [rootMessage, correlatedRejection];
+      }
+      return [validRootMessage];
+    }
+  );
+  assert.ok(nextPending, "La siguiente solicitud autorizada debe procesarse sin ser bloqueada");
+  assert.equal(nextPending.raw.ts, validRootTs);
+  assert.equal(nextPending.repository, "fragonh2-boop/fornexa-ai-reviewer");
 });

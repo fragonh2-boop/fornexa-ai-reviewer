@@ -193,9 +193,14 @@ async function processReviewRequest(
   try {
     if (!isRepositoryAllowed(repo)) {
       console.warn(`[${new Date().toISOString()}] Repositorio no permitido: '${repo}'.`);
+      const targetScope =
+        request.target === "pr"
+          ? `PR #${request.prNumber}: HEAD solicitado \`${request.requestedHead}\``
+          : `TARGET: ${request.ref}\nHEAD \`${request.requestedHead}\``;
       await postReviewUpdate(
         `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\n` +
-          `Repositorio no autorizado: \`${repo}\`.\n\n` +
+          `Repo: ${repo}\n` +
+          `${targetScope}: repositorio no autorizado: \`${repo}\`.\n\n` +
           `_Solo se admiten repositorios autorizados en la allowlist cerrada._`,
         delivery
       );
