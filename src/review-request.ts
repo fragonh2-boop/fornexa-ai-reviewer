@@ -1,6 +1,35 @@
+export const ALLOWED_REPOSITORIES = [
+  "fragonh2-boop/fornexa-ai-reviewer",
+  "fragonh2-boop/Fornexa",
+] as const;
+
+export type AllowedRepository = (typeof ALLOWED_REPOSITORIES)[number];
+
+export const DEFAULT_REPOSITORY: AllowedRepository = "fragonh2-boop/Fornexa";
+
+export function normalizeRepository(repoStr: string): string {
+  const trimmed = repoStr.trim();
+  const parts = trimmed.split("/");
+  if (parts.length !== 2) return trimmed;
+  const [owner, name] = parts;
+  for (const allowed of ALLOWED_REPOSITORIES) {
+    if (allowed.toLowerCase() === `${owner}/${name}`.toLowerCase()) {
+      return allowed;
+    }
+  }
+  return `${owner}/${name}`;
+}
+
+export function isRepositoryAllowed(repo: string): repo is AllowedRepository {
+  const normalized = normalizeRepository(repo);
+  return (ALLOWED_REPOSITORIES as readonly string[]).includes(normalized);
+}
+
 export interface BaseReviewRequest {
+  repository: string;
   requestedHead: string;
   instructions: string;
+  rawRepository?: string;
 }
 
 export interface PRReviewRequest extends BaseReviewRequest {
@@ -93,6 +122,14 @@ export function isReviewResponseForRequest(
 
   if (requestTs && message.text.split("\n")[1] !== `SLACK_REQUEST_TS: ${requestTs}`) return false;
 
+  const repoMatch = message.text.match(/^\s*Repo(?:sitory)?\s*:\s*`?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)`?\s*$/im);
+  if (repoMatch) {
+    const responseRepo = normalizeRepository(repoMatch[1]);
+    if (responseRepo !== normalizeRepository(request.repository)) {
+      return false;
+    }
+  }
+
   return request.target === "pr"
     ? message.text.includes(`PR #${request.prNumber}:`)
     : message.text.includes(`TARGET: ${request.ref}`);
@@ -106,6 +143,10 @@ export function parseReviewRequest(text: string, agentLabel: string): ReviewRequ
   const headMatch = text.match(/HEAD(?:\s+exacto)?\s*:\s*`?([0-9a-f]{40})`?\s*$/im);
   if (!headMatch) return null;
 
+  const repoMatch = text.match(/^\s*Repo(?:sitory)?\s*:\s*`?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)`?\s*$/im);
+  const rawRepository = repoMatch ? repoMatch[1].trim() : undefined;
+  const repository = rawRepository ? normalizeRepository(rawRepository) : DEFAULT_REPOSITORY;
+
   const requestedHead = headMatch[1].toLowerCase();
   const targetMatch = text.match(/^\s*(?:TARGET|BRANCH)\s*:\s*`?([A-Za-z0-9._\/-]+)`?\s*$/im);
   const modeMatch = text.match(/^\s*MODE\s*:\s*(MAIN|PR)\s*$/im);
@@ -118,6 +159,8 @@ export function parseReviewRequest(text: string, agentLabel: string): ReviewRequ
     const ref = (targetMatch?.[1] ?? "main").toLowerCase();
     if (ref !== "main") return null;
     return {
+      repository,
+      rawRepository,
       target: "ref",
       ref,
       requestedHead,
@@ -131,6 +174,8 @@ export function parseReviewRequest(text: string, agentLabel: string): ReviewRequ
   if (!explicitPrMatch) return null;
 
   return {
+    repository,
+    rawRepository,
     target: "pr",
     prNumber: Number(explicitPrMatch[1]),
     requestedHead,

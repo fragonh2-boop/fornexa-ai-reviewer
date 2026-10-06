@@ -29,7 +29,7 @@ export function formatSlackMessageParts(text: string, maxChars = 3800): string[]
   if (correlated) {
     const separator = body.indexOf("\n\n");
     const scope = separator === -1 ? body : body.slice(0, separator);
-    if (/^(?:TARGET:|PR #\d+:)/.test(scope) && /\bHEAD\b/.test(scope) && /[a-f0-9]{40}/i.test(scope)) {
+    if (/^(?:Repo:\s*[^\n]+\n)?(?:TARGET:|PR #\d+:)/.test(scope) && /\bHEAD\b/.test(scope) && /[a-f0-9]{40}/i.test(scope)) {
       prefix += `${scope}\n\n`;
       body = separator === -1 ? "" : body.slice(separator + 2);
     }

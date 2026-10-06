@@ -38,7 +38,11 @@ import { MeshBridge, MeshBridgeError } from "./mesh-bridge.js";
 import { isMeshControlAuthorized, parseMeshPingTarget } from "./mesh-control.js";
 import { reconcilePolledMesh } from "./mesh-poll.js";
 import { verifySlackPublisherIdentity } from "./slack-publisher-identity.js";
-import type { ReviewRequest } from "./review-request.js";
+import {
+  type ReviewRequest,
+  isRepositoryAllowed,
+  normalizeRepository,
+} from "./review-request.js";
 import {
   buildContextFromThread,
   containsPotentialSecret,
@@ -172,7 +176,8 @@ async function processReviewRequest(
   request: ReviewRequest,
   delivery?: ReviewDelivery
 ): Promise<void> {
-  const targetLabel = request.target === "pr" ? `pr:${request.prNumber}` : `ref:${request.ref}`;
+  const repo = normalizeRepository(request.repository);
+  const targetLabel = request.target === "pr" ? `pr:${repo}:${request.prNumber}` : `ref:${repo}:${request.ref}`;
   const reviewKey = `${targetLabel}:${request.requestedHead}`;
   const lock = acquireLock(inFlightReviews, reviewKey, staleLockMs);
   if (!lock.acquired) {
@@ -186,69 +191,104 @@ async function processReviewRequest(
   }
 
   try {
+    if (!isRepositoryAllowed(repo)) {
+      console.warn(`[${new Date().toISOString()}] Repositorio no permitido: '${repo}'.`);
+      const targetScope =
+        request.target === "pr"
+          ? `PR #${request.prNumber}: HEAD solicitado \`${request.requestedHead}\``
+          : `TARGET: ${request.ref}\nHEAD \`${request.requestedHead}\``;
+      await postReviewUpdate(
+        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\n` +
+          `Repo: ${repo}\n` +
+          `${targetScope}: repositorio no autorizado: \`${repo}\`.\n\n` +
+          `_Solo se admiten repositorios autorizados en la allowlist cerrada._`,
+        delivery
+      );
+      return;
+    }
+
     await postReviewUpdate(
       `${config.slack.agentLabel} — REVISIÓN RECIBIDA\n\n` +
-        `Solicitud aceptada para ${targetLabel}, HEAD \`${request.requestedHead}\`. ` +
+        `Solicitud aceptada para ${repo} (${request.target === "pr" ? `PR #${request.prNumber}` : `TARGET: ${request.ref}`}), HEAD \`${request.requestedHead}\`. ` +
         "Se publicará un resultado terminal en este hilo.",
       delivery
     );
 
     if (request.target === "pr") {
       console.log(
-        `[${new Date().toISOString()}] Handoff detectado: PR #${request.prNumber}, HEAD ${request.requestedHead}. Revisando...`
+        `[${new Date().toISOString()}] Handoff detectado: ${repo} PR #${request.prNumber}, HEAD ${request.requestedHead}. Revisando...`
       );
 
-      const ctx = await getPRContext(request.prNumber);
+      const ctx = await getPRContext(request.prNumber, repo);
       if (ctx.headSha.toLowerCase() !== request.requestedHead) {
         if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
         await postReviewUpdate(
-          `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nPR #${ctx.number}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con el SHA actual; no se ha revisado un diff distinto del solicitado._`,
+          `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\n` +
+            `Repo: ${repo}\n` +
+            `PR #${ctx.number}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n` +
+            `_Publicad una nueva acción requerida con el SHA actual; no se ha revisado un diff distinto del solicitado._`,
           delivery
         );
         console.log(
-          `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en PR #${request.prNumber}.`
+          `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en ${repo} PR #${request.prNumber}.`
         );
         return;
       }
 
       const verdict = await reviewPR(ctx, "SEGUNDA_REVISION", undefined, request.instructions);
-      if ((await getPRContext(request.prNumber)).headSha !== ctx.headSha) throw new Error('HEAD changed during review');
-      const body = `${config.slack.agentLabel} — REVISIÓN\n\nPR #${ctx.number}: ${ctx.title}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
+      const postReviewCtx = await getPRContext(request.prNumber, repo);
+      if (postReviewCtx.headSha !== ctx.headSha) throw new Error('HEAD changed during review');
+      const body = `${config.slack.agentLabel} — REVISIÓN\n\n` +
+        `Repo: ${repo}\n` +
+        `PR #${ctx.number}: ${ctx.title}\n` +
+        `HEAD revisado: \`${ctx.headSha}\`\n\n` +
+        `${verdict}\n\n` +
+        `_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
 
       if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
       await postReviewUpdate(body, delivery);
-      console.log(`[${new Date().toISOString()}] Veredicto publicado en Slack para PR #${request.prNumber}.`);
+      console.log(`[${new Date().toISOString()}] Veredicto publicado en Slack para ${repo} PR #${request.prNumber}.`);
       return;
     }
 
     console.log(
-      `[${new Date().toISOString()}] Handoff detectado: TARGET ${request.ref}, HEAD ${request.requestedHead}. Revisando estado del repositorio...`
+      `[${new Date().toISOString()}] Handoff detectado: ${repo} TARGET ${request.ref}, HEAD ${request.requestedHead}. Revisando estado del repositorio...`
     );
 
-    const ctx = await getRefContext(request.ref);
+    const ctx = await getRefContext(request.ref, repo);
     if (ctx.headSha.toLowerCase() !== request.requestedHead) {
       if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
       await postReviewUpdate(
-        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\nTARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`,
+        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\n` +
+          `Repo: ${repo}\n` +
+          `TARGET: ${request.ref}\n` +
+          `HEAD \`${request.requestedHead}\`: ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n` +
+          `_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`,
         delivery
       );
       console.log(
-        `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en TARGET ${request.ref}.`
+        `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en ${repo} TARGET ${request.ref}.`
       );
       return;
     }
 
     const verdict = await reviewRepository(ctx, request.instructions);
-    const body = `${config.slack.agentLabel} — REVISIÓN\n\nTARGET: ${ctx.ref}\nHEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
+    const body = `${config.slack.agentLabel} — REVISIÓN\n\n` +
+      `Repo: ${repo}\n` +
+      `TARGET: ${ctx.ref}\n` +
+      `HEAD revisado: \`${ctx.headSha}\`\n\n` +
+      `${verdict}\n\n` +
+      `_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
+
     if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
     await postReviewUpdate(body, delivery);
-    console.log(`[${new Date().toISOString()}] Revisión de estado publicada para TARGET ${ctx.ref}.`);
+    console.log(`[${new Date().toISOString()}] Revisión de estado publicada para ${repo} TARGET ${ctx.ref}.`);
   } catch (err) {
     if (ownsLock(inFlightReviews, reviewKey, lock.startedAt)) {
       const scope =
         request.target === "pr"
-          ? `PR #${request.prNumber}: la revisión del HEAD \`${request.requestedHead}\` falló antes de completarse.`
-          : `TARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: la revisión falló antes de completarse.`;
+          ? `Repo: ${repo}\nPR #${request.prNumber}: la revisión del HEAD \`${request.requestedHead}\` falló antes de completarse.`
+          : `Repo: ${repo}\nTARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: la revisión falló antes de completarse.`;
       await notifyFailure(scope, delivery);
     }
     throw err;

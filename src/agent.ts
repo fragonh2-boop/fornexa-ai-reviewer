@@ -76,10 +76,10 @@ const tools: ChatCompletionTool[] = [
   },
 ];
 
-async function runReview(messages: ChatCompletionMessageParam[], head: string): Promise<string> {
+async function runReview(messages: ChatCompletionMessageParam[], head: string, repo?: string): Promise<string> {
   return runCapabilities(adapter, messages, [{ definition: tools[0], execute: async args => {
     if (typeof args.path !== 'string' || !safePath(args.path)) throw new Error('Invalid read path');
-    return getFullFileAtRef(args.path, head);
+    return getFullFileAtRef(args.path, head, repo);
   } }]);
 }
 
@@ -105,7 +105,7 @@ export async function reviewPR(
         requestInstructions,
       }),
     },
-  ], ctx.headSha);
+  ], ctx.headSha, ctx.repo);
 }
 
 export async function reviewRepository(
@@ -125,7 +125,7 @@ export async function reviewRepository(
         requestInstructions,
       }),
     },
-  ], ctx.headSha);
+  ], ctx.headSha, ctx.repo);
 }
 
 export async function runContextOnboarding(context: string): Promise<string> {
@@ -214,6 +214,14 @@ export const conversationTools: ChatCompletionTool[] = [
             type: "number",
             description: "Número de la PR a revisar (obligatorio si target es 'pr').",
           },
+          repo: {
+            type: "string",
+            description: "Repositorio objetivo en formato 'owner/repo' (ej. 'fragonh2-boop/fornexa-ai-reviewer' o 'fragonh2-boop/Fornexa').",
+          },
+          expectedHeadSha: {
+            type: "string",
+            description: "SHA exacto de 40 caracteres esperado en el commit HEAD para prevenir desactualización (TOCTOU).",
+          },
           instructions: {
             type: "string",
             description: "Instrucciones o enfoque específico para la revisión que realizará DeepSeek.",
@@ -259,6 +267,10 @@ export const conversationTools: ChatCompletionTool[] = [
             type: "string",
             description: "Nombre de la rama o referencia (por defecto 'main').",
           },
+          repo: {
+            type: "string",
+            description: "Repositorio objetivo en formato 'owner/repo' (por defecto 'fragonh2-boop/Fornexa').",
+          },
         },
       },
     },
@@ -297,8 +309,10 @@ export async function answerSlackConversation(
       execute: async (args) => {
         const target = args.target === "pr" ? "pr" : "main";
         const prNumber = typeof args.prNumber === "number" ? args.prNumber : undefined;
+        const repo = typeof args.repo === "string" ? args.repo : undefined;
+        const expectedHeadSha = typeof args.expectedHeadSha === "string" ? args.expectedHeadSha : undefined;
         const instructions = typeof args.instructions === "string" ? args.instructions : undefined;
-        const res = await dispatchDeepSeekReview({ target, prNumber, instructions });
+        const res = await dispatchDeepSeekReview({ target, prNumber, instructions, repo, expectedHeadSha });
         return JSON.stringify(res);
       },
     },
@@ -315,7 +329,8 @@ export async function answerSlackConversation(
       definition: conversationTools[5],
       execute: async (args) => {
         const ref = typeof args.ref === "string" ? args.ref : "main";
-        const res = await getRepositoryStatus(ref);
+        const repo = typeof args.repo === "string" ? args.repo : undefined;
+        const res = await getRepositoryStatus(ref, repo);
         return JSON.stringify(res);
       },
     },

@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { getPRContext, getRefContext } from "./github.js";
 import { postToChannelSmart, postToThreadSmart } from "./slack.js";
+import { isRepositoryAllowed, normalizeRepository } from "../review-request.js";
 
 export const CLAUDE_SLACK_USER_ID = process.env.CLAUDE_SLACK_USER_ID?.trim() || "U0C3L9US98D";
 export const GPT_SLACK_USER_ID = process.env.GPT_SLACK_USER_ID?.trim() || "U0BTA39J97T";
@@ -25,6 +26,7 @@ export interface DeepSeekReviewDispatchParams {
   prNumber?: number;
   instructions?: string;
   repo?: string;
+  expectedHeadSha?: string;
 }
 
 export interface DeepSeekReviewDispatchResult {
@@ -38,16 +40,19 @@ export interface DeepSeekReviewDispatchResult {
 
 /**
  * Publica una orden formal de revisión para DeepSeek en el canal de Slack
- * resolviendo automáticamente el HEAD SHA exacto desde GitHub.
+ * resolviendo automáticamente el HEAD SHA exacto desde GitHub y validando repositorios/HEADs.
  */
 export async function dispatchDeepSeekReview(
   params: DeepSeekReviewDispatchParams,
   deps: Partial<OrchestrationDependencies> = {}
 ): Promise<DeepSeekReviewDispatchResult> {
   const target = params.target || "main";
-  const repoOwner = config.github.owner;
-  const repoName = params.repo || config.github.repo;
-  const fullRepo = `${repoOwner}/${repoName}`;
+  const rawRepo = params.repo || `${config.github.owner}/${config.github.repo}`;
+  const fullRepo = normalizeRepository(rawRepo);
+
+  if (!isRepositoryAllowed(fullRepo)) {
+    throw new Error(`Repositorio no permitido para dispatch: '${fullRepo}'. Solo se admiten repositorios en la allowlist.`);
+  }
 
   const fetchPRContext = deps.getPRContext ?? defaultDependencies.getPRContext;
   const fetchRefContext = deps.getRefContext ?? defaultDependencies.getRefContext;
@@ -58,7 +63,14 @@ export async function dispatchDeepSeekReview(
       throw new Error("Se requiere un número de PR válido (prNumber) cuando target es 'pr'.");
     }
 
-    const prCtx = await fetchPRContext(params.prNumber);
+    const prCtx = await fetchPRContext(params.prNumber, fullRepo);
+
+    if (params.expectedHeadSha && prCtx.headSha.toLowerCase() !== params.expectedHeadSha.toLowerCase()) {
+      throw new Error(
+        `HEAD mismatch para PR #${params.prNumber} en ${fullRepo}: se esperaba ${params.expectedHeadSha}, pero el HEAD actual es ${prCtx.headSha}.`
+      );
+    }
+
     const instructions =
       params.instructions?.trim() ||
       `Revisión solicitada por el orquestador Gemini para PR #${params.prNumber}.`;
@@ -66,6 +78,7 @@ export async function dispatchDeepSeekReview(
     const messageText = [
       "DEEPSEEK — ACCIÓN REQUERIDA",
       "MODE: PR",
+      `Repo: ${fullRepo}`,
       `PR #${params.prNumber}`,
       `HEAD: ${prCtx.headSha}`,
       "",
@@ -85,7 +98,14 @@ export async function dispatchDeepSeekReview(
   }
 
   // target === "main"
-  const refCtx = await fetchRefContext("main");
+  const refCtx = await fetchRefContext("main", fullRepo);
+
+  if (params.expectedHeadSha && refCtx.headSha.toLowerCase() !== params.expectedHeadSha.toLowerCase()) {
+    throw new Error(
+      `HEAD mismatch para main en ${fullRepo}: se esperaba ${params.expectedHeadSha}, pero el HEAD actual es ${refCtx.headSha}.`
+    );
+  }
+
   const instructions =
     params.instructions?.trim() ||
     "Revisión de estado de repositorio solicitada por el orquestador Gemini.";
@@ -183,19 +203,27 @@ export interface RepositoryStatusResult {
 }
 
 /**
- * Consulta en GitHub el estado actual de una rama (por defecto 'main').
+ * Consulta en GitHub el estado actual de una rama (por defecto 'main') para un repositorio autorizado.
  */
 export async function getRepositoryStatus(
   ref: string = "main",
+  repoTarget?: string,
   deps: Partial<OrchestrationDependencies> = {}
 ): Promise<RepositoryStatusResult> {
   const targetRef = ref.trim() || "main";
+  const rawRepo = repoTarget || `${config.github.owner}/${config.github.repo}`;
+  const fullRepo = normalizeRepository(rawRepo);
+
+  if (!isRepositoryAllowed(fullRepo)) {
+    throw new Error(`Repositorio no permitido: '${fullRepo}'. Solo se admiten repositorios en la allowlist.`);
+  }
+
   const fetchRefContext = deps.getRefContext ?? defaultDependencies.getRefContext;
-  const refCtx = await fetchRefContext(targetRef);
+  const refCtx = await fetchRefContext(targetRef, fullRepo);
 
   return {
     ok: true,
-    repo: `${config.github.owner}/${config.github.repo}`,
+    repo: fullRepo,
     ref: refCtx.ref,
     headSha: refCtx.headSha,
     headMessage: refCtx.headMessage,
