@@ -7,6 +7,12 @@ import { getFullFileAtRef, type PRContext, type RefContext } from "./tools/githu
 import { SYSTEM_PROMPT, buildRepositoryReviewPrompt, buildUserPrompt } from "./prompt.js";
 import { ensureContextResponseMarker } from "./context-onboarding.js";
 import {
+  ReadEvidenceTracker,
+  detectRequiredSources,
+  validateReadEvidence,
+} from "./read-evidence.js";
+import { DEFAULT_REPOSITORY } from "./review-request.js";
+import {
   getCurrentWeather,
   fetchWebContent,
   sidecarManager,
@@ -76,11 +82,61 @@ const tools: ChatCompletionTool[] = [
   },
 ];
 
-async function runReview(messages: ChatCompletionMessageParam[], head: string, repo?: string): Promise<string> {
-  return runCapabilities(adapter, messages, [{ definition: tools[0], execute: async args => {
-    if (typeof args.path !== 'string' || !safePath(args.path)) throw new Error('Invalid read path');
-    return getFullFileAtRef(args.path, head, repo);
-  } }]);
+async function runReview(
+  messages: ChatCompletionMessageParam[],
+  head: string,
+  repo?: string,
+  requestInstructions?: string
+): Promise<string> {
+  const targetRepo = repo || DEFAULT_REPOSITORY;
+  const tracker = new ReadEvidenceTracker(targetRepo, head);
+  const requiredSources = detectRequiredSources(requestInstructions);
+
+  const verdict = await runCapabilities(adapter, messages, [
+    {
+      definition: tools[0],
+      execute: async (args) => {
+        const requestedPath = typeof args.path === "string" ? args.path : "";
+        const requestedRef = typeof args.ref === "string" ? args.ref : head;
+        if (!requestedPath || !safePath(requestedPath)) {
+          tracker.recordRead({
+            repo: targetRepo,
+            ref: requestedRef,
+            path: requestedPath || "unknown",
+            error: "Invalid read path",
+          });
+          throw new Error("Invalid read path");
+        }
+
+        try {
+          const content = await getFullFileAtRef(requestedPath, head, repo);
+          tracker.recordRead({
+            repo: targetRepo,
+            ref: requestedRef,
+            path: requestedPath,
+            content,
+          });
+          return content;
+        } catch (err) {
+          tracker.recordRead({
+            repo: targetRepo,
+            ref: requestedRef,
+            path: requestedPath,
+            error: (err as Error).message,
+          });
+          throw err;
+        }
+      },
+    },
+  ]);
+
+  validateReadEvidence({
+    tracker,
+    requiredSources,
+    verdict,
+  });
+
+  return verdict;
 }
 
 export async function reviewPR(
@@ -89,43 +145,53 @@ export async function reviewPR(
   arbitrationContext?: string,
   requestInstructions?: string
 ): Promise<string> {
-  return runReview([
-    { role: "system", content: SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: buildUserPrompt({
-        prNumber: ctx.number,
-        title: ctx.title,
-        headSha: ctx.headSha,
-        diffText: ctx.diffText,
-        changedFiles: ctx.changedFiles,
-        checks: ctx.checks,
-        mode,
-        arbitrationContext,
-        requestInstructions,
-      }),
-    },
-  ], ctx.headSha, ctx.repo);
+  return runReview(
+    [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: buildUserPrompt({
+          prNumber: ctx.number,
+          title: ctx.title,
+          headSha: ctx.headSha,
+          diffText: ctx.diffText,
+          changedFiles: ctx.changedFiles,
+          checks: ctx.checks,
+          mode,
+          arbitrationContext,
+          requestInstructions,
+        }),
+      },
+    ],
+    ctx.headSha,
+    ctx.repo,
+    requestInstructions
+  );
 }
 
 export async function reviewRepository(
   ctx: RefContext,
   requestInstructions: string
 ): Promise<string> {
-  return runReview([
-    { role: "system", content: SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: buildRepositoryReviewPrompt({
-        ref: ctx.ref,
-        headSha: ctx.headSha,
-        headMessage: ctx.headMessage,
-        recentCommits: ctx.recentCommits,
-        checks: ctx.checks,
-        requestInstructions,
-      }),
-    },
-  ], ctx.headSha, ctx.repo);
+  return runReview(
+    [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: buildRepositoryReviewPrompt({
+          ref: ctx.ref,
+          headSha: ctx.headSha,
+          headMessage: ctx.headMessage,
+          recentCommits: ctx.recentCommits,
+          checks: ctx.checks,
+          requestInstructions,
+        }),
+      },
+    ],
+    ctx.headSha,
+    ctx.repo,
+    requestInstructions
+  );
 }
 
 export async function runContextOnboarding(context: string): Promise<string> {

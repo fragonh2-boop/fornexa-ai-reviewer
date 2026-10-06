@@ -3,6 +3,7 @@ import { createDiagnosticReporter } from "./request-diagnostics.js";
 import { processImplementation } from "./implementation-runner.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
+import { ReadEvidenceError } from "./read-evidence.js";
 import {
   readRecentHistory,
   findPendingHandoffWithThreadState,
@@ -285,10 +286,14 @@ async function processReviewRequest(
     console.log(`[${new Date().toISOString()}] Revisión de estado publicada para ${repo} TARGET ${ctx.ref}.`);
   } catch (err) {
     if (ownsLock(inFlightReviews, reviewKey, lock.startedAt)) {
+      const isReadEvidence = err instanceof ReadEvidenceError;
+      const safeReason = isReadEvidence
+        ? `la revisión del HEAD \`${request.requestedHead}\` falló por falta o discrepancia de evidencia de lectura (${err.safeMessage})`
+        : `la revisión del HEAD \`${request.requestedHead}\` falló antes de completarse`;
       const scope =
         request.target === "pr"
-          ? `Repo: ${repo}\nPR #${request.prNumber}: la revisión del HEAD \`${request.requestedHead}\` falló antes de completarse.`
-          : `Repo: ${repo}\nTARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: la revisión falló antes de completarse.`;
+          ? `Repo: ${repo}\nPR #${request.prNumber}: ${safeReason}.`
+          : `Repo: ${repo}\nTARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: ${safeReason}.`;
       await notifyFailure(scope, delivery);
     }
     throw err;
