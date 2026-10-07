@@ -1,11 +1,21 @@
 import { runCapabilities, type Capability } from "./capabilities.js";
 import { safePath } from "./implementation.js";
-import { createAdapter, supportsLegacyOnboarding } from "./providers.js";
+import { createAdapter, supportsLegacyOnboarding, type ModelAdapter } from "./providers.js";
 import type { ChatCompletionTool, ChatCompletionMessageParam } from "openai/resources/index.js";
 import { config } from "./config.js";
 import { getFullFileAtRef, type PRContext, type RefContext } from "./tools/github.js";
 import { SYSTEM_PROMPT, buildRepositoryReviewPrompt, buildUserPrompt } from "./prompt.js";
 import { ensureContextResponseMarker } from "./context-onboarding.js";
+import {
+  ReadEvidenceTracker,
+  ReadEvidenceError,
+  detectRequiredSources,
+  validateReadEvidence,
+  normalizeFilePath,
+  MAX_REQUIRED_SOURCES,
+  type ReviewEvidenceScope,
+} from "./read-evidence.js";
+import { DEFAULT_REPOSITORY, normalizeRepository } from "./review-request.js";
 import {
   getCurrentWeather,
   fetchWebContent,
@@ -76,56 +86,196 @@ const tools: ChatCompletionTool[] = [
   },
 ];
 
-async function runReview(messages: ChatCompletionMessageParam[], head: string, repo?: string): Promise<string> {
-  return runCapabilities(adapter, messages, [{ definition: tools[0], execute: async args => {
-    if (typeof args.path !== 'string' || !safePath(args.path)) throw new Error('Invalid read path');
-    return getFullFileAtRef(args.path, head, repo);
-  } }]);
+export interface ReviewOptions {
+  adapter?: ModelAdapter;
+  getFile?: (path: string, ref: string, repo?: string) => Promise<string>;
+}
+
+async function runReview(
+  messages: ChatCompletionMessageParam[],
+  head: string,
+  repo?: string,
+  requestInstructions?: string,
+  targetRef?: string,
+  scope?: ReviewEvidenceScope,
+  options?: ReviewOptions
+): Promise<string> {
+  const targetRepo = repo || DEFAULT_REPOSITORY;
+  const tracker = new ReadEvidenceTracker(targetRepo, head);
+  const effectiveScope: ReviewEvidenceScope = scope ?? {
+    kind: targetRef === "pr" ? "pull_request" : "repository",
+  };
+  const requiredSources = detectRequiredSources(requestInstructions, effectiveScope);
+
+  const activeAdapter = options?.adapter ?? adapter;
+  const activeGetFile = options?.getFile ?? getFullFileAtRef;
+
+  const verdict = await runCapabilities(activeAdapter, messages, [
+    {
+      definition: tools[0],
+      execute: async (args) => {
+        const rawPath = typeof args.path === "string" ? args.path : "";
+        const requestedPath = normalizeFilePath(rawPath);
+        if (!requestedPath || !safePath(requestedPath)) {
+          tracker.recordRead({
+            repo: targetRepo,
+            ref: head,
+            path: requestedPath || "unknown",
+            error: "Invalid read path",
+          });
+          throw new ReadEvidenceError(
+            "READ_FAILED",
+            "Ruta de lectura no permitida o no válida",
+            requestedPath || "unknown"
+          );
+        }
+
+        // Validación de ref: si el modelo provee ref, validar que sea compatible con la revisión activa
+        if (typeof args.ref === "string" && args.ref.trim() !== "") {
+          const refArg = args.ref.trim();
+          const isExactHead = refArg.toLowerCase() === head.toLowerCase();
+          const isSymbolicHead = refArg.toUpperCase() === "HEAD";
+          const isTargetRef = Boolean(targetRef && refArg.toLowerCase() === targetRef.toLowerCase());
+
+          if (!isExactHead && !isSymbolicHead && !isTargetRef) {
+            tracker.recordRead({
+              repo: targetRepo,
+              ref: head,
+              path: requestedPath,
+              error: "Incompatible ref argument",
+            });
+            throw new ReadEvidenceError(
+              "CROSS_REQUEST_CONTAMINATION",
+              "Argumento de ref incompatible con la revisión activa",
+              requestedPath
+            );
+          }
+        }
+
+        // Validación de repo: si el modelo provee repo, validar que coincida con targetRepo
+        if (typeof args.repo === "string" && args.repo.trim() !== "") {
+          const normalizedArgRepo = normalizeRepository(args.repo);
+          if (normalizedArgRepo !== targetRepo) {
+            tracker.recordRead({
+              repo: targetRepo,
+              ref: head,
+              path: requestedPath,
+              error: "Incompatible repository argument",
+            });
+            throw new ReadEvidenceError(
+              "CROSS_REQUEST_CONTAMINATION",
+              "Argumento de repositorio incompatible con la revisión activa",
+              requestedPath
+            );
+          }
+        }
+
+        // Bound actual reads as well as named requirements; do not silently
+        // discard dynamically selected sources or permit unbounded repeated reads.
+        if (tracker.getRecords().length >= MAX_REQUIRED_SOURCES) {
+          throw new ReadEvidenceError(
+            "BUDGET_EXCEEDED",
+            "Se superó el límite de lecturas permitidas para la revisión"
+          );
+        }
+
+        try {
+          const content = await activeGetFile(requestedPath, head, repo);
+          tracker.recordRead({
+            repo: targetRepo,
+            ref: head,
+            path: requestedPath,
+            content,
+          });
+          return content;
+        } catch {
+          tracker.recordRead({
+            repo: targetRepo,
+            ref: head,
+            path: requestedPath,
+            error: "Read failed",
+          });
+          throw new ReadEvidenceError("READ_FAILED", "No se pudo obtener una fuente requerida para la revisión");
+        }
+      },
+    },
+  ]);
+
+  validateReadEvidence({
+    tracker,
+    requiredSources,
+    verdict,
+    scope: effectiveScope,
+  });
+
+  return verdict;
 }
 
 export async function reviewPR(
   ctx: PRContext,
   mode: "SEGUNDA_REVISION" | "ARBITRAJE",
   arbitrationContext?: string,
-  requestInstructions?: string
+  requestInstructions?: string,
+  options?: ReviewOptions
 ): Promise<string> {
-  return runReview([
-    { role: "system", content: SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: buildUserPrompt({
-        prNumber: ctx.number,
-        title: ctx.title,
-        headSha: ctx.headSha,
-        diffText: ctx.diffText,
-        changedFiles: ctx.changedFiles,
-        checks: ctx.checks,
-        mode,
-        arbitrationContext,
-        requestInstructions,
-      }),
-    },
-  ], ctx.headSha, ctx.repo);
+  const scope: ReviewEvidenceScope = { kind: "pull_request" };
+  return runReview(
+    [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: buildUserPrompt({
+          prNumber: ctx.number,
+          title: ctx.title,
+          headSha: ctx.headSha,
+          diffText: ctx.diffText,
+          changedFiles: ctx.changedFiles,
+          checks: ctx.checks,
+          mode,
+          arbitrationContext,
+          requestInstructions,
+        }),
+      },
+    ],
+    ctx.headSha,
+    ctx.repo,
+    requestInstructions,
+    "pr",
+    scope,
+    options
+  );
 }
 
 export async function reviewRepository(
   ctx: RefContext,
-  requestInstructions: string
+  requestInstructions: string,
+  options?: ReviewOptions
 ): Promise<string> {
-  return runReview([
-    { role: "system", content: SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: buildRepositoryReviewPrompt({
-        ref: ctx.ref,
-        headSha: ctx.headSha,
-        headMessage: ctx.headMessage,
-        recentCommits: ctx.recentCommits,
-        checks: ctx.checks,
-        requestInstructions,
-      }),
-    },
-  ], ctx.headSha, ctx.repo);
+  // Metadata/conversation APIs are separate. This formal review contract cannot
+  // be disabled by provider text, language, or injected test options.
+  const scope: ReviewEvidenceScope = { kind: "repository" };
+  return runReview(
+    [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: buildRepositoryReviewPrompt({
+          ref: ctx.ref,
+          headSha: ctx.headSha,
+          headMessage: ctx.headMessage,
+          recentCommits: ctx.recentCommits,
+          checks: ctx.checks,
+          requestInstructions,
+        }),
+      },
+    ],
+    ctx.headSha,
+    ctx.repo,
+    requestInstructions,
+    ctx.ref,
+    scope,
+    options
+  );
 }
 
 export async function runContextOnboarding(context: string): Promise<string> {

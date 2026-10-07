@@ -1,5 +1,6 @@
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/index.js';
 import type { ModelAdapter } from './providers.js';
+import { ReadEvidenceError } from './read-evidence.js';
 export interface Capability { definition: ChatCompletionTool; execute(args: Record<string, unknown>): Promise<string> }
 /** Provider-independent execution and budgets. Only supplied capabilities can run. */
 export async function runCapabilities(adapter: ModelAdapter, messages: ChatCompletionMessageParam[], capabilities: Capability[]): Promise<string> {
@@ -25,6 +26,12 @@ export async function runCapabilities(adapter: ModelAdapter, messages: ChatCompl
       try {
         content = await capability.execute(args as Record<string, unknown>);
       } catch (err) {
+        if (
+          err instanceof ReadEvidenceError ||
+          (err as { name?: string })?.name === "ReadEvidenceError"
+        ) {
+          throw err;
+        }
         content = `Error: ${(err as Error).message}`;
       }
       if (Buffer.byteLength(content) > 100_000) throw new Error('File budget exceeded');
