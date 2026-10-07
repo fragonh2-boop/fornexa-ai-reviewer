@@ -4,7 +4,6 @@ import {
   ReadEvidenceTracker,
   ReadEvidenceError,
   detectRequiredSources,
-  extractCodeBlocks,
   codeMatchesAuthenticSource,
   validateReadEvidence,
   MAX_READ_BYTES_PER_FILE,
@@ -14,6 +13,9 @@ import {
   isReviewResponseForRequest,
   type ReviewRequest,
 } from "../src/review-request.js";
+import { runCapabilities, type Capability } from "../src/capabilities.js";
+import { safePath } from "../src/implementation.js";
+import type { ModelAdapter } from "../src/providers.js";
 
 process.env.DEEPSEEK_API_KEY = "test-deepseek-key";
 process.env.SLACK_BOT_TOKEN = "xoxb-test-bot-token";
@@ -838,4 +840,109 @@ test("21. Camino real agent-GitHub-validación-index: candado, dobles en memoria
   );
 
   assert.equal(pending, null, "El hilo queda cerrado y el candado libre");
+});
+
+test("22. Claude MUST 1: runCapabilities aborta inmediatamente ante ReadEvidenceError", async () => {
+  const capability: Capability = {
+    definition: {
+      type: "function",
+      function: {
+        name: "get_full_file",
+        description: "get file",
+        parameters: { type: "object", properties: { path: { type: "string" } } },
+      },
+    },
+    async execute() {
+      throw new ReadEvidenceError(
+        "CROSS_REQUEST_CONTAMINATION",
+        "Incompatible ref: bad-ref",
+        "src/auth.ts"
+      );
+    },
+  };
+
+  const adapter: ModelAdapter = {
+    async complete() {
+      return {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: {
+              name: "get_full_file",
+              arguments: JSON.stringify({ path: "src/auth.ts" }),
+            },
+          },
+        ],
+      };
+    },
+  };
+
+  await assert.rejects(
+    runCapabilities(adapter, [{ role: "user", content: "test prompt" }], [capability]),
+    (err: unknown) => {
+      assert(err instanceof ReadEvidenceError);
+      assert.equal(err.code, "CROSS_REQUEST_CONTAMINATION");
+      assert.match(err.message, /Incompatible ref: bad-ref/);
+      return true;
+    }
+  );
+});
+
+test("23. Claude MUST 2: detectRequiredSources no rechaza solicitudes estándar con más de 10 rutas sin requerir contenido íntegro", () => {
+  // Lista de 12 archivos en prosa de una revisión normal
+  const normalPRInstructions =
+    "Por favor revisa los cambios en los siguientes ficheros: " +
+    Array.from({ length: 12 }, (_, i) => `src/file${i}.ts`).join(", ") +
+    ". Identifica riesgos de seguridad o regresiones.";
+
+  const reqs = detectRequiredSources(normalPRInstructions);
+  assert.equal(reqs.length, 0);
+
+  // Solicitud que sí exige contenido íntegro para más de 10 ficheros
+  const fullContentInstructions =
+    "Emite el contenido íntegro de: " +
+    Array.from({ length: 11 }, (_, i) => `src/file${i}.ts`).join(", ");
+
+  assert.throws(
+    () => detectRequiredSources(fullContentInstructions),
+    (err: unknown) => {
+      assert(err instanceof ReadEvidenceError);
+      assert.equal(err.code, "BUDGET_EXCEEDED");
+      return true;
+    }
+  );
+
+  // Solicitud con más de 10 instrucciones explícitas de get_full_file
+  const explicitReadsInstructions = Array.from(
+    { length: 11 },
+    (_, i) => `Usa get_full_file para src/file${i}.ts`
+  ).join(". ");
+
+  assert.throws(
+    () => detectRequiredSources(explicitReadsInstructions),
+    (err: unknown) => {
+      assert(err instanceof ReadEvidenceError);
+      assert.equal(err.code, "BUDGET_EXCEEDED");
+      return true;
+    }
+  );
+});
+
+test("24. Claude/DeepSeek SHOULD 3: safePath y codeMatchesAuthenticSource admiten rutas Next.js con corchetes", () => {
+  // safePath
+  assert.equal(safePath("app/[id]/page.tsx"), true);
+  assert.equal(safePath("src/routes/[...slug]/page.tsx"), true);
+  assert.equal(safePath("../app/[id]/page.tsx"), false);
+  assert.equal(safePath(".env"), false);
+
+  // codeMatchesAuthenticSource con comentario cosmético de cabecera con corchetes
+  const authentic = "export default function Page() {\n  return <div>OK</div>;\n}";
+  const emittedWithBracketComment = "// app/[id]/page.tsx\nexport default function Page() {\n  return <div>OK</div>;\n}";
+  assert.equal(codeMatchesAuthenticSource(emittedWithBracketComment, authentic), true);
+
+  const emittedWithBlockComment = "/* app/[id]/page.tsx */\nexport default function Page() {\n  return <div>OK</div>;\n}";
+  assert.equal(codeMatchesAuthenticSource(emittedWithBlockComment, authentic), true);
 });

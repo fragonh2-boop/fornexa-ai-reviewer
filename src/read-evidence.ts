@@ -73,7 +73,7 @@ export function codeMatchesAuthenticSource(emittedCode: string, authenticSource:
 
   // Si el bloque emitido contiene un comentario inicial cosmético con la ruta
   const linesEmitted = normEmitted.split("\n");
-  if (linesEmitted.length > 1 && /^\s*(?:\/\/|\/\*|#)\s*[\w./-]+\s*(?:\*\/)?$/i.test(linesEmitted[0].trim())) {
+  if (linesEmitted.length > 1 && /^\s*(?:\/\/|\/\*|#)\s*[\w.\[\]/-]+\s*(?:\*\/)?$/i.test(linesEmitted[0].trim())) {
     const strippedEmitted = linesEmitted.slice(1).join("\n").trim();
     if (strippedEmitted === normAuthentic) {
       return true;
@@ -308,9 +308,6 @@ export function detectRequiredSources(instructions?: string): ReadEvidenceRequir
     const clean = normalizeFilePath(match[1]);
     if (clean && !clean.includes("..")) {
       seenPaths.add(clean);
-      if (!isFullReq) {
-        explicitReadPaths.add(clean);
-      }
     }
   }
 
@@ -325,9 +322,6 @@ export function detectRequiredSources(instructions?: string): ReadEvidenceRequir
       !candidate.startsWith("https://")
     ) {
       seenPaths.add(candidate);
-      if (!isFullReq) {
-        explicitReadPaths.add(candidate);
-      }
     }
   }
 
@@ -347,17 +341,16 @@ export function detectRequiredSources(instructions?: string): ReadEvidenceRequir
     const clean = normalizeFilePath(match[1]);
     if (clean && !clean.includes("..")) {
       seenPaths.add(clean);
-      if (!isFullReq) {
-        explicitReadPaths.add(clean);
-      }
     }
   }
 
   // Verificación de límite presupuestario (MUST: No truncar silenciosamente)
-  if (seenPaths.size > MAX_REQUIRED_SOURCES) {
+  // Aplica a seenPaths cuando se solicita contenido íntegro; o a explicitReadPaths en caso no-íntegro
+  const pathsToValidate = isFullReq ? seenPaths : explicitReadPaths;
+  if (pathsToValidate.size > MAX_REQUIRED_SOURCES) {
     throw new ReadEvidenceError(
       "BUDGET_EXCEEDED",
-      `Se superó el límite de fuentes requeridas (${seenPaths.size} > ${MAX_REQUIRED_SOURCES})`
+      `Se superó el límite de fuentes requeridas (${pathsToValidate.size} > ${MAX_REQUIRED_SOURCES})`
     );
   }
 

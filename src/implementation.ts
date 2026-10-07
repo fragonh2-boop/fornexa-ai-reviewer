@@ -5,7 +5,7 @@ import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/reso
 export interface ImplementationRequest { head: string; task: string; paths: string[]; acceptance: string; id: string }
 export interface FileChange { path: string; content: string }
 export function safePath(path: string): boolean {
-  return /^[A-Za-z0-9_./-]+$/.test(path) && !path.split('/').some(p => !p || p === '.' || p === '..')
+  return /^[A-Za-z0-9_.\[\]/-]+$/.test(path) && !path.split('/').some(p => !p || p === '.' || p === '..')
     && !/(^|\/)(\.git|\.env[^/]*|node_modules)(\/|$)/.test(path);
 }
 /** Write restrictions are separate from reads: reviewers must inspect CI/config. */

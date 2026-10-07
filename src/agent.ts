@@ -8,6 +8,7 @@ import { SYSTEM_PROMPT, buildRepositoryReviewPrompt, buildUserPrompt } from "./p
 import { ensureContextResponseMarker } from "./context-onboarding.js";
 import {
   ReadEvidenceTracker,
+  ReadEvidenceError,
   detectRequiredSources,
   validateReadEvidence,
   normalizeFilePath,
@@ -107,7 +108,11 @@ async function runReview(
             path: requestedPath || "unknown",
             error: "Invalid read path",
           });
-          throw new Error("Invalid read path");
+          throw new ReadEvidenceError(
+            "READ_FAILED",
+            "Invalid read path",
+            requestedPath || "unknown"
+          );
         }
 
         // Validación de ref: si el modelo provee ref, validar que sea compatible con la revisión activa
@@ -124,7 +129,11 @@ async function runReview(
               path: requestedPath,
               error: "Incompatible ref argument",
             });
-            throw new Error(`Incompatible ref: ${refArg}`);
+            throw new ReadEvidenceError(
+              "CROSS_REQUEST_CONTAMINATION",
+              `Incompatible ref: ${refArg}`,
+              requestedPath
+            );
           }
         }
 
@@ -138,7 +147,11 @@ async function runReview(
               path: requestedPath,
               error: "Incompatible repository argument",
             });
-            throw new Error(`Incompatible repository: ${args.repo}`);
+            throw new ReadEvidenceError(
+              "CROSS_REQUEST_CONTAMINATION",
+              `Incompatible repository: ${args.repo}`,
+              requestedPath
+            );
           }
         }
 
