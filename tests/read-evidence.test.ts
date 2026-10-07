@@ -16,12 +16,14 @@ import {
 import { runCapabilities, type Capability } from "../src/capabilities.js";
 import { safePath } from "../src/implementation.js";
 import type { ModelAdapter } from "../src/providers.js";
+import type { RefContext, PRContext } from "../src/tools/github.js";
 
 process.env.DEEPSEEK_API_KEY = "test-deepseek-key";
 process.env.SLACK_BOT_TOKEN = "xoxb-test-bot-token";
 process.env.GITHUB_TOKEN = "test-github-token";
 
 const { findPendingHandoffWithThreadState } = await import("../src/tools/slack.js");
+const { reviewRepository, reviewPR } = await import("../src/agent.js");
 
 test("1. detectRequiredSources: detecta fuentes exigidas y bandera de contenido íntegro", () => {
   const instr1 = "Por favor, emite la fuente íntegra de `lib/regulatory-lifecycle.ts` para verificar la regla DeCA.";
@@ -855,7 +857,7 @@ test("22. Claude MUST 1: runCapabilities aborta inmediatamente ante ReadEvidence
     async execute() {
       throw new ReadEvidenceError(
         "CROSS_REQUEST_CONTAMINATION",
-        "Incompatible ref: bad-ref",
+        "Argumento de ref incompatible con la revisión activa",
         "src/auth.ts"
       );
     },
@@ -885,7 +887,7 @@ test("22. Claude MUST 1: runCapabilities aborta inmediatamente ante ReadEvidence
     (err: unknown) => {
       assert(err instanceof ReadEvidenceError);
       assert.equal(err.code, "CROSS_REQUEST_CONTAMINATION");
-      assert.match(err.message, /Incompatible ref: bad-ref/);
+      assert.match(err.message, /Argumento de ref incompatible con la revisión activa/);
       return true;
     }
   );
@@ -945,4 +947,331 @@ test("24. Claude/DeepSeek SHOULD 3: safePath y codeMatchesAuthenticSource admite
 
   const emittedWithBlockComment = "/* app/[id]/page.tsx */\nexport default function Page() {\n  return <div>OK</div>;\n}";
   assert.equal(codeMatchesAuthenticSource(emittedWithBlockComment, authentic), true);
+});
+
+test("25. MUST 1 Probe 1: reviewRepository con 'Revisa `src/auth.ts` y dime si hay fuga' rechaza sin lecturas con MISSING_READ", async () => {
+  const repo = "fragonh2-boop/fornexa-ai-reviewer";
+  const headSha = "c0e27bf183df80c35aed5bc6a2fd4200144fb0f3";
+  const ctx: RefContext = {
+    ref: "main",
+    headSha,
+    headMessage: "chore: update dependencies",
+    recentCommits: [{ sha: headSha, message: "chore: update dependencies" }],
+    checks: [{ name: "ci", status: "completed", conclusion: "success" }],
+    repo,
+  };
+
+  let getFileCalls = 0;
+  const mockGetFile = async () => {
+    getFileCalls++;
+    return "export const auth = true;";
+  };
+
+  // Modelo doble: 1 llamada al modelo, 0 llamadas a herramientas
+  const mockAdapter: ModelAdapter = {
+    async complete() {
+      return {
+        role: "assistant",
+        content: "He leído src/auth.ts: no hay fuga. MUST: ninguno. MERGE: YES",
+      };
+    },
+  };
+
+  await assert.rejects(
+    reviewRepository(ctx, "Revisa `src/auth.ts` y dime si hay fuga.", {
+      adapter: mockAdapter,
+      getFile: mockGetFile,
+    }),
+    (err: unknown) => {
+      assert(err instanceof ReadEvidenceError);
+      assert.equal(err.code, "MISSING_READ");
+      assert.equal(err.path, "src/auth.ts");
+      assert.match(err.safeMessage, /No se ejecutó la lectura requerida de src\/auth\.ts/);
+      return true;
+    }
+  );
+
+  assert.equal(getFileCalls, 0, "GitHub no debió recibir llamadas");
+});
+
+test("26. MUST 1 Probe 2 (Control full-sin-lectura): solicitud de contenido íntegro sin lectura rechaza con MISSING_READ", async () => {
+  const repo = "fragonh2-boop/fornexa-ai-reviewer";
+  const headSha = "c0e27bf183df80c35aed5bc6a2fd4200144fb0f3";
+  const ctx: RefContext = {
+    ref: "main",
+    headSha,
+    headMessage: "chore: test",
+    recentCommits: [{ sha: headSha, message: "chore: test" }],
+    checks: [],
+    repo,
+  };
+
+  const mockAdapter: ModelAdapter = {
+    async complete() {
+      return {
+        role: "assistant",
+        content: "### src/auth.ts\n```ts\nexport const fake = 1;\n```",
+      };
+    },
+  };
+
+  await assert.rejects(
+    reviewRepository(ctx, "Lee `src/auth.ts` y devuelve contenido íntegro.", {
+      adapter: mockAdapter,
+      getFile: async () => "export const auth = true;",
+    }),
+    (err: unknown) => {
+      assert(err instanceof ReadEvidenceError);
+      assert.equal(err.code, "MISSING_READ");
+      return true;
+    }
+  );
+});
+
+test("27. MUST 2 Probe 3: ref incompatible con marcador sintético produce error seguro sin filtrar canary", async () => {
+  const repo = "fragonh2-boop/fornexa-ai-reviewer";
+  const headSha = "c0e27bf183df80c35aed5bc6a2fd4200144fb0f3";
+  const canary = "SYNTHETIC_DIAGNOSTIC_CANARY_0241";
+  const ctx: RefContext = {
+    ref: "main",
+    headSha,
+    headMessage: "test",
+    recentCommits: [],
+    checks: [],
+    repo,
+  };
+
+  const mockAdapter: ModelAdapter = {
+    async complete() {
+      return {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_ref_canary",
+            type: "function",
+            function: {
+              name: "get_full_file",
+              arguments: JSON.stringify({
+                path: "src/auth.ts",
+                ref: canary,
+              }),
+            },
+          },
+        ],
+      };
+    },
+  };
+
+  await assert.rejects(
+    reviewRepository(ctx, "Revisa `src/auth.ts`", {
+      adapter: mockAdapter,
+      getFile: async () => "content",
+    }),
+    (err: unknown) => {
+      assert(err instanceof ReadEvidenceError);
+      assert.equal(err.code, "CROSS_REQUEST_CONTAMINATION");
+      assert.equal(err.safeMessage, "Argumento de ref incompatible con la revisión activa");
+      assert.equal(err.safeMessage.includes(canary), false, "safeMessage no debe contener el canario");
+      assert.equal(err.message.includes(canary), false, "err.message no debe contener el canario");
+
+      // Simular formateo público de terminal en index.ts
+      const safeReason = `la revisión del HEAD \`${headSha}\` falló por falta o discrepancia de evidencia de lectura (${err.safeMessage})`;
+      assert.equal(safeReason.includes(canary), false, "safeReason público no debe contener el canario");
+      return true;
+    }
+  );
+});
+
+test("28. MUST 2 Probe 4: repo incompatible con marcador sintético produce error seguro sin filtrar canary", async () => {
+  const repo = "fragonh2-boop/fornexa-ai-reviewer";
+  const headSha = "c0e27bf183df80c35aed5bc6a2fd4200144fb0f3";
+  const canary = "SYNTHETIC_DIAGNOSTIC_CANARY_0241";
+  const ctx: RefContext = {
+    ref: "main",
+    headSha,
+    headMessage: "test",
+    recentCommits: [],
+    checks: [],
+    repo,
+  };
+
+  const mockAdapter: ModelAdapter = {
+    async complete() {
+      return {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_repo_canary",
+            type: "function",
+            function: {
+              name: "get_full_file",
+              arguments: JSON.stringify({
+                path: "src/auth.ts",
+                repo: canary,
+              }),
+            },
+          },
+        ],
+      };
+    },
+  };
+
+  await assert.rejects(
+    reviewRepository(ctx, "Revisa `src/auth.ts`", {
+      adapter: mockAdapter,
+      getFile: async () => "content",
+    }),
+    (err: unknown) => {
+      assert(err instanceof ReadEvidenceError);
+      assert.equal(err.code, "CROSS_REQUEST_CONTAMINATION");
+      assert.equal(err.safeMessage, "Argumento de repositorio incompatible con la revisión activa");
+      assert.equal(err.safeMessage.includes(canary), false, "safeMessage no debe contener el canario");
+      assert.equal(err.message.includes(canary), false, "err.message no debe contener el canario");
+
+      const safeReason = `la revisión del HEAD \`${headSha}\` falló por falta o discrepancia de evidencia de lectura (${err.safeMessage})`;
+      assert.equal(safeReason.includes(canary), false, "safeReason público no debe contener el canario");
+      return true;
+    }
+  );
+});
+
+test("29. Control positivo Main: ref main, lectura efectiva y veredicto fundamentado aceptado", async () => {
+  const repo = "fragonh2-boop/fornexa-ai-reviewer";
+  const headSha = "c0e27bf183df80c35aed5bc6a2fd4200144fb0f3";
+  const ctx: RefContext = {
+    ref: "main",
+    headSha,
+    headMessage: "feat: add auth check",
+    recentCommits: [{ sha: headSha, message: "feat: add auth check" }],
+    checks: [{ name: "ci", status: "completed", conclusion: "success" }],
+    repo,
+  };
+
+  let turns = 0;
+  let getFileCount = 0;
+
+  const mockAdapter: ModelAdapter = {
+    async complete() {
+      turns++;
+      if (turns === 1) {
+        return {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_read_auth",
+              type: "function",
+              function: {
+                name: "get_full_file",
+                arguments: JSON.stringify({
+                  path: "src/auth.ts",
+                  ref: headSha,
+                }),
+              },
+            },
+          ],
+        };
+      }
+      return {
+        role: "assistant",
+        content: "Revisado src/auth.ts de forma íntegra: no se aprecian fugas de secretos ni desbordamientos. MUST: ninguno. MERGE: YES",
+      };
+    },
+  };
+
+  const mockGetFile = async (path: string, ref: string) => {
+    getFileCount++;
+    assert.equal(path, "src/auth.ts");
+    assert.equal(ref, headSha);
+    return "export function authenticate(token: string) { return Boolean(token); }\n";
+  };
+
+  const verdict = await reviewRepository(ctx, "Revisa `src/auth.ts` y dime si hay fuga", {
+    adapter: mockAdapter,
+    getFile: mockGetFile,
+  });
+
+  assert.equal(turns, 2, "El modelo debe haber realizado 2 turnos (herramienta + veredicto)");
+  assert.equal(getFileCount, 1, "Debe haberse realizado 1 lectura de GitHub");
+  assert.match(verdict, /Revisado src\/auth\.ts/);
+  assert.match(verdict, /MERGE: YES/);
+});
+
+test("30. PR Review: diff suministrado en prompt evalúa cambios sin exigir lecturas forzadas en GitHub", async () => {
+  const repo = "fragonh2-boop/fornexa-ai-reviewer";
+  const headSha = "c0e27bf183df80c35aed5bc6a2fd4200144fb0f3";
+  const prCtx: PRContext = {
+    number: 37,
+    title: "guard read evidence",
+    headSha,
+    baseSha: "base123",
+    repo,
+    changedFiles: ["src/a.ts", "src/b.ts", "src/c.ts"],
+    diffText: "diff --git a/src/a.ts b/src/a.ts\n+export const a = 1;\n",
+    checks: [{ name: "ci", status: "completed", conclusion: "success" }],
+  };
+
+  let getFileCount = 0;
+  const mockAdapter: ModelAdapter = {
+    async complete() {
+      return {
+        role: "assistant",
+        content: "Revisado el diff de la PR: no se aprecian anomalías en src/a.ts. MUST: ninguno. MERGE: YES",
+      };
+    },
+  };
+
+  const verdict = await reviewPR(
+    prCtx,
+    "SEGUNDA_REVISION",
+    undefined,
+    "Por favor revisa los cambios en src/a.ts y src/b.ts.",
+    {
+      adapter: mockAdapter,
+      getFile: async () => {
+        getFileCount++;
+        return "";
+      },
+    }
+  );
+
+  assert.equal(getFileCount, 0, "No debe obligar a llamadas de get_full_file si el diff está en prompt");
+  assert.match(verdict, /MERGE: YES/);
+});
+
+test("31. MUST 1 Probe: afirmación de lectura en veredicto sin tool call falla cerrado aun con instrucción genérica", async () => {
+  const repo = "fragonh2-boop/fornexa-ai-reviewer";
+  const headSha = "c0e27bf183df80c35aed5bc6a2fd4200144fb0f3";
+  const ctx: RefContext = {
+    ref: "main",
+    headSha,
+    headMessage: "test",
+    recentCommits: [],
+    checks: [],
+    repo,
+  };
+
+  const mockAdapter: ModelAdapter = {
+    async complete() {
+      return {
+        role: "assistant",
+        content: "He leído `src/secret.ts`: no hay problemas. MUST: ninguno. MERGE: YES",
+      };
+    },
+  };
+
+  await assert.rejects(
+    reviewRepository(ctx, "Revisa el estado general del repositorio", {
+      adapter: mockAdapter,
+      getFile: async () => "",
+    }),
+    (err: unknown) => {
+      assert(err instanceof ReadEvidenceError);
+      assert.equal(err.code, "MISSING_READ");
+      assert.equal(err.path, "src/secret.ts");
+      return true;
+    }
+  );
 });

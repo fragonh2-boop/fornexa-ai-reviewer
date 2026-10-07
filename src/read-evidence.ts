@@ -22,6 +22,12 @@ export interface ReadEvidenceRequirement {
   requiresFullContent: boolean;
 }
 
+export interface ReviewEvidenceScope {
+  hasSourceInPrompt?: boolean;
+  targetRef?: string;
+  providedPaths?: string[];
+}
+
 export type ReadEvidenceErrorCode =
   | "MISSING_READ"
   | "READ_FAILED"
@@ -291,8 +297,13 @@ export function isFullContentRequested(instructions?: string): boolean {
  * Extrae las rutas de ficheros exigidas a partir de las instrucciones de la solicitud.
  * Si se solicita contenido íntegro y se excede el límite de 10 fuentes, arroja BUDGET_EXCEEDED sin truncar.
  * Si se solicita contenido íntegro pero no se puede identificar ninguna fuente verificable, falla cerrado.
+ * Si la revisión es de repositorio (main/rama) sin código en prompt (hasSourceInPrompt === false),
+ * cualquier fichero objetivo de revisión/inspección técnica requiere lectura efectiva vía GitHub.
  */
-export function detectRequiredSources(instructions?: string): ReadEvidenceRequirement[] {
+export function detectRequiredSources(
+  instructions?: string,
+  scope?: ReviewEvidenceScope
+): ReadEvidenceRequirement[] {
   if (!instructions || typeof instructions !== "string") {
     return [];
   }
@@ -344,6 +355,39 @@ export function detectRequiredSources(instructions?: string): ReadEvidenceRequir
     }
   }
 
+  // 5. En revisión de repositorio (main/rama) sin fuente en prompt (scope.hasSourceInPrompt === false):
+  // Cualquier fichero objeto de revisión/inspección técnica (revisa, analiza, comprueba, etc.)
+  // o consulta de riesgo dirigida a un fichero requiere lectura efectiva vía GitHub.
+  if (scope?.hasSourceInPrompt === false) {
+    const inspectionVerbRegex = /(?:revisa|revisar|analiza|analizar|comprueba|comprobar|examina|examinar|inspecciona|inspeccionar|audita|auditar|verifica|verificar|mira|mirar|evalúa|evaluar|estudia|estudiar)\s+(?:el\s+|la\s+|los\s+|las\s+)?(?:fichero|archivo|código|codigo|fuente|módulo|modulo)?.*?(?:de\s+|para\s+|en\s+|sobre\s+)?([a-zA-Z0-9_.\[\]/-]+\.[a-zA-Z0-9_-]+)/gi;
+    while ((match = inspectionVerbRegex.exec(instructions)) !== null) {
+      const clean = normalizeFilePath(match[1]);
+      if (clean && !clean.includes("..")) {
+        seenPaths.add(clean);
+        explicitReadPaths.add(clean);
+      }
+    }
+
+    const riskQueryRegex = /(?:fuga(?:s)?|vulnerabilidad(?:es)?|seguridad|fallo(?:s)?|error(?:es)?|leak(?:s)?|bug(?:s)?)\s+(?:en|sobre|de)\s+[`"']?([a-zA-Z0-9_.\[\]/-]+\.[a-zA-Z0-9_-]+)/gi;
+    while ((match = riskQueryRegex.exec(instructions)) !== null) {
+      const clean = normalizeFilePath(match[1]);
+      if (clean && !clean.includes("..")) {
+        seenPaths.add(clean);
+        explicitReadPaths.add(clean);
+      }
+    }
+
+    // Si en las instrucciones de revisión de repositorio se citaron ficheros y hay intención técnica
+    if (seenPaths.size > 0 && explicitReadPaths.size === 0) {
+      const hasReviewIntent = /(?:revis|analiz|comprob|examin|inspeccion|audit|verific|fuga|seguridad|fallo|error)/i.test(instructions);
+      if (hasReviewIntent) {
+        for (const p of seenPaths) {
+          explicitReadPaths.add(p);
+        }
+      }
+    }
+  }
+
   // Verificación de límite presupuestario (MUST: No truncar silenciosamente)
   // Aplica a seenPaths cuando se solicita contenido íntegro; o a explicitReadPaths en caso no-íntegro
   const pathsToValidate = isFullReq ? seenPaths : explicitReadPaths;
@@ -380,8 +424,9 @@ export function validateReadEvidence(params: {
   tracker: ReadEvidenceTracker;
   requiredSources: ReadEvidenceRequirement[];
   verdict: string;
+  scope?: ReviewEvidenceScope;
 }): void {
-  const { tracker, requiredSources, verdict } = params;
+  const { tracker, requiredSources, verdict, scope } = params;
 
   // Verificación 1: Comprobación de discordancia de procedencia
   for (const record of tracker.getRecords()) {
@@ -409,9 +454,28 @@ export function validateReadEvidence(params: {
     );
   }
 
+  // Verificación en revisiones sin fuente en prompt (main/rama):
+  // Si no se proporcionó código en el prompt, el modelo no puede aseverar haber leído
+  // ni emitir bloques de código de ficheros que no hayan sido leídos efectivamente en GitHub.
+  if (scope?.hasSourceInPrompt === false) {
+    const readClaimRegex = /(?:he\s+(?:le[ií]do|revisado|analizado|inspeccionado|comprobado|examinado)|tras\s+(?:leer|revisar|analizar|inspeccionar))\s+[`"']?([a-zA-Z0-9_.\[\]/-]+\.[a-zA-Z0-9_-]+)/gi;
+    let claimMatch: RegExpExecArray | null;
+    while ((claimMatch = readClaimRegex.exec(verdict)) !== null) {
+      const claimedPath = normalizeFilePath(claimMatch[1]);
+      if (claimedPath && !tracker.findSuccessfulRead(claimedPath)) {
+        throw new ReadEvidenceError(
+          "MISSING_READ",
+          `No se ejecutó la lectura requerida de ${claimedPath}`,
+          claimedPath
+        );
+      }
+    }
+  }
+
   if (requiredSources.length === 0) {
     return;
   }
+
 
   const codeBlocksWithMeta = extractCodeBlocksWithMetadata(verdict);
   const candidatePaths = requiredSources.map((r) => r.path);

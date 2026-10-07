@@ -1,6 +1,6 @@
 import { runCapabilities, type Capability } from "./capabilities.js";
 import { safePath } from "./implementation.js";
-import { createAdapter, supportsLegacyOnboarding } from "./providers.js";
+import { createAdapter, supportsLegacyOnboarding, type ModelAdapter } from "./providers.js";
 import type { ChatCompletionTool, ChatCompletionMessageParam } from "openai/resources/index.js";
 import { config } from "./config.js";
 import { getFullFileAtRef, type PRContext, type RefContext } from "./tools/github.js";
@@ -12,6 +12,7 @@ import {
   detectRequiredSources,
   validateReadEvidence,
   normalizeFilePath,
+  type ReviewEvidenceScope,
 } from "./read-evidence.js";
 import { DEFAULT_REPOSITORY, normalizeRepository } from "./review-request.js";
 import {
@@ -84,18 +85,33 @@ const tools: ChatCompletionTool[] = [
   },
 ];
 
+export interface ReviewOptions {
+  adapter?: ModelAdapter;
+  getFile?: (path: string, ref: string, repo?: string) => Promise<string>;
+  scope?: ReviewEvidenceScope;
+}
+
 async function runReview(
   messages: ChatCompletionMessageParam[],
   head: string,
   repo?: string,
   requestInstructions?: string,
-  targetRef?: string
+  targetRef?: string,
+  scope?: ReviewEvidenceScope,
+  options?: ReviewOptions
 ): Promise<string> {
   const targetRepo = repo || DEFAULT_REPOSITORY;
   const tracker = new ReadEvidenceTracker(targetRepo, head);
-  const requiredSources = detectRequiredSources(requestInstructions);
+  const effectiveScope: ReviewEvidenceScope = scope ?? {
+    hasSourceInPrompt: targetRef === "pr",
+    targetRef,
+  };
+  const requiredSources = detectRequiredSources(requestInstructions, effectiveScope);
 
-  const verdict = await runCapabilities(adapter, messages, [
+  const activeAdapter = options?.adapter ?? adapter;
+  const activeGetFile = options?.getFile ?? getFullFileAtRef;
+
+  const verdict = await runCapabilities(activeAdapter, messages, [
     {
       definition: tools[0],
       execute: async (args) => {
@@ -110,7 +126,7 @@ async function runReview(
           });
           throw new ReadEvidenceError(
             "READ_FAILED",
-            "Invalid read path",
+            "Ruta de lectura no permitida o no válida",
             requestedPath || "unknown"
           );
         }
@@ -131,7 +147,7 @@ async function runReview(
             });
             throw new ReadEvidenceError(
               "CROSS_REQUEST_CONTAMINATION",
-              `Incompatible ref: ${refArg}`,
+              "Argumento de ref incompatible con la revisión activa",
               requestedPath
             );
           }
@@ -149,14 +165,14 @@ async function runReview(
             });
             throw new ReadEvidenceError(
               "CROSS_REQUEST_CONTAMINATION",
-              `Incompatible repository: ${args.repo}`,
+              "Argumento de repositorio incompatible con la revisión activa",
               requestedPath
             );
           }
         }
 
         try {
-          const content = await getFullFileAtRef(requestedPath, head, repo);
+          const content = await activeGetFile(requestedPath, head, repo);
           tracker.recordRead({
             repo: targetRepo,
             ref: head,
@@ -181,6 +197,7 @@ async function runReview(
     tracker,
     requiredSources,
     verdict,
+    scope: effectiveScope,
   });
 
   return verdict;
@@ -190,8 +207,14 @@ export async function reviewPR(
   ctx: PRContext,
   mode: "SEGUNDA_REVISION" | "ARBITRAJE",
   arbitrationContext?: string,
-  requestInstructions?: string
+  requestInstructions?: string,
+  options?: ReviewOptions
 ): Promise<string> {
+  const scope: ReviewEvidenceScope = options?.scope ?? {
+    hasSourceInPrompt: true,
+    targetRef: "pr",
+    providedPaths: ctx.changedFiles,
+  };
   return runReview(
     [
       { role: "system", content: SYSTEM_PROMPT },
@@ -213,14 +236,22 @@ export async function reviewPR(
     ctx.headSha,
     ctx.repo,
     requestInstructions,
-    "pr"
+    "pr",
+    scope,
+    options
   );
 }
 
 export async function reviewRepository(
   ctx: RefContext,
-  requestInstructions: string
+  requestInstructions: string,
+  options?: ReviewOptions
 ): Promise<string> {
+  const scope: ReviewEvidenceScope = options?.scope ?? {
+    hasSourceInPrompt: false,
+    targetRef: ctx.ref,
+    providedPaths: [],
+  };
   return runReview(
     [
       { role: "system", content: SYSTEM_PROMPT },
@@ -239,7 +270,9 @@ export async function reviewRepository(
     ctx.headSha,
     ctx.repo,
     requestInstructions,
-    ctx.ref
+    ctx.ref,
+    scope,
+    options
   );
 }
 
