@@ -10,8 +10,9 @@ import {
   ReadEvidenceTracker,
   detectRequiredSources,
   validateReadEvidence,
+  normalizeFilePath,
 } from "./read-evidence.js";
-import { DEFAULT_REPOSITORY } from "./review-request.js";
+import { DEFAULT_REPOSITORY, normalizeRepository } from "./review-request.js";
 import {
   getCurrentWeather,
   fetchWebContent,
@@ -86,7 +87,8 @@ async function runReview(
   messages: ChatCompletionMessageParam[],
   head: string,
   repo?: string,
-  requestInstructions?: string
+  requestInstructions?: string,
+  targetRef?: string
 ): Promise<string> {
   const targetRepo = repo || DEFAULT_REPOSITORY;
   const tracker = new ReadEvidenceTracker(targetRepo, head);
@@ -96,23 +98,55 @@ async function runReview(
     {
       definition: tools[0],
       execute: async (args) => {
-        const requestedPath = typeof args.path === "string" ? args.path : "";
-        const requestedRef = typeof args.ref === "string" ? args.ref : head;
+        const rawPath = typeof args.path === "string" ? args.path : "";
+        const requestedPath = normalizeFilePath(rawPath);
         if (!requestedPath || !safePath(requestedPath)) {
           tracker.recordRead({
             repo: targetRepo,
-            ref: requestedRef,
+            ref: head,
             path: requestedPath || "unknown",
             error: "Invalid read path",
           });
           throw new Error("Invalid read path");
         }
 
+        // Validación de ref: si el modelo provee ref, validar que sea compatible con la revisión activa
+        if (typeof args.ref === "string" && args.ref.trim() !== "") {
+          const refArg = args.ref.trim();
+          const isExactHead = refArg.toLowerCase() === head.toLowerCase();
+          const isSymbolicHead = refArg.toUpperCase() === "HEAD";
+          const isTargetRef = Boolean(targetRef && refArg.toLowerCase() === targetRef.toLowerCase());
+
+          if (!isExactHead && !isSymbolicHead && !isTargetRef) {
+            tracker.recordRead({
+              repo: targetRepo,
+              ref: head,
+              path: requestedPath,
+              error: "Incompatible ref argument",
+            });
+            throw new Error(`Incompatible ref: ${refArg}`);
+          }
+        }
+
+        // Validación de repo: si el modelo provee repo, validar que coincida con targetRepo
+        if (typeof args.repo === "string" && args.repo.trim() !== "") {
+          const normalizedArgRepo = normalizeRepository(args.repo);
+          if (normalizedArgRepo !== targetRepo) {
+            tracker.recordRead({
+              repo: targetRepo,
+              ref: head,
+              path: requestedPath,
+              error: "Incompatible repository argument",
+            });
+            throw new Error(`Incompatible repository: ${args.repo}`);
+          }
+        }
+
         try {
           const content = await getFullFileAtRef(requestedPath, head, repo);
           tracker.recordRead({
             repo: targetRepo,
-            ref: requestedRef,
+            ref: head,
             path: requestedPath,
             content,
           });
@@ -120,9 +154,9 @@ async function runReview(
         } catch (err) {
           tracker.recordRead({
             repo: targetRepo,
-            ref: requestedRef,
+            ref: head,
             path: requestedPath,
-            error: (err as Error).message,
+            error: "Read failed",
           });
           throw err;
         }
@@ -165,7 +199,8 @@ export async function reviewPR(
     ],
     ctx.headSha,
     ctx.repo,
-    requestInstructions
+    requestInstructions,
+    "pr"
   );
 }
 
@@ -190,7 +225,8 @@ export async function reviewRepository(
     ],
     ctx.headSha,
     ctx.repo,
-    requestInstructions
+    requestInstructions,
+    ctx.ref
   );
 }
 
