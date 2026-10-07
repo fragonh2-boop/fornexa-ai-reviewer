@@ -22,11 +22,10 @@ export interface ReadEvidenceRequirement {
   requiresFullContent: boolean;
 }
 
-export interface ReviewEvidenceScope {
-  hasSourceInPrompt?: boolean;
-  targetRef?: string;
-  providedPaths?: string[];
-}
+/** Selected by the formal review entry point, never by model prose. */
+export type ReviewEvidenceScope =
+  | { kind: "repository" }
+  | { kind: "pull_request" };
 
 export type ReadEvidenceErrorCode =
   | "MISSING_READ"
@@ -297,8 +296,9 @@ export function isFullContentRequested(instructions?: string): boolean {
  * Extrae las rutas de ficheros exigidas a partir de las instrucciones de la solicitud.
  * Si se solicita contenido íntegro y se excede el límite de 10 fuentes, arroja BUDGET_EXCEEDED sin truncar.
  * Si se solicita contenido íntegro pero no se puede identificar ninguna fuente verificable, falla cerrado.
- * Si la revisión es de repositorio (main/rama) sin código en prompt (hasSourceInPrompt === false),
- * cualquier fichero objetivo de revisión/inspección técnica requiere lectura efectiva vía GitHub.
+ * In a formal repository review the prompt contains metadata, not source.
+ * Every named source is therefore required, regardless of language or verbs.
+ * PR diff-only reviews retain their supplied source and explicit-read semantics.
  */
 export function detectRequiredSources(
   instructions?: string,
@@ -323,7 +323,7 @@ export function detectRequiredSources(
   }
 
   // 2. Rutas en texto llano con '/' y extensión de fichero (p. ej. lib/regulatory-lifecycle.ts, src/foo.ts)
-  const pathTokenRegex = /(?:^|[\s,;:(])((?:[a-zA-Z0-9_.-]|\[[a-zA-Z0-9_.-]+\])+(?:\/(?:[a-zA-Z0-9_.-]|\[[a-zA-Z0-9_.-]+\])+)+\.[a-zA-Z0-9_-]+)(?:$|[\s,;:).])/g;
+  const pathTokenRegex = /(?:^|[\s,;:(])((?:[a-zA-Z0-9_.-]|\[[a-zA-Z0-9_.-]+\])+(?:\/(?:[a-zA-Z0-9_.-]|\[[a-zA-Z0-9_.-]+\])+)+\.[a-zA-Z0-9_-]+)(?=$|[\s,;:).])/g;
   while ((match = pathTokenRegex.exec(instructions)) !== null) {
     const candidate = normalizeFilePath(match[1]);
     if (
@@ -334,6 +334,14 @@ export function detectRequiredSources(
     ) {
       seenPaths.add(candidate);
     }
+  }
+
+  // Root-level source names need the same binding as paths with '/'. This is
+  // lexical source selection, not a classifier for review intent/language.
+  const rootFileTokenRegex = /(?:^|[\s,;:(])([a-zA-Z0-9_.\[\]-]+\.[a-zA-Z][a-zA-Z0-9_-]*)(?=$|[\s,;:).])/g;
+  while ((match = rootFileTokenRegex.exec(instructions)) !== null) {
+    const clean = normalizeFilePath(match[1]);
+    if (clean && !clean.includes("..")) seenPaths.add(clean);
   }
 
   // 3. Patrones de acción explícita (get_full_file, lee, leer, consultar)
@@ -355,37 +363,8 @@ export function detectRequiredSources(
     }
   }
 
-  // 5. En revisión de repositorio (main/rama) sin fuente en prompt (scope.hasSourceInPrompt === false):
-  // Cualquier fichero objeto de revisión/inspección técnica (revisa, analiza, comprueba, etc.)
-  // o consulta de riesgo dirigida a un fichero requiere lectura efectiva vía GitHub.
-  if (scope?.hasSourceInPrompt === false) {
-    const inspectionVerbRegex = /(?:revisa|revisar|analiza|analizar|comprueba|comprobar|examina|examinar|inspecciona|inspeccionar|audita|auditar|verifica|verificar|mira|mirar|evalúa|evaluar|estudia|estudiar)\s+(?:el\s+|la\s+|los\s+|las\s+)?(?:fichero|archivo|código|codigo|fuente|módulo|modulo)?.*?(?:de\s+|para\s+|en\s+|sobre\s+)?([a-zA-Z0-9_.\[\]/-]+\.[a-zA-Z0-9_-]+)/gi;
-    while ((match = inspectionVerbRegex.exec(instructions)) !== null) {
-      const clean = normalizeFilePath(match[1]);
-      if (clean && !clean.includes("..")) {
-        seenPaths.add(clean);
-        explicitReadPaths.add(clean);
-      }
-    }
-
-    const riskQueryRegex = /(?:fuga(?:s)?|vulnerabilidad(?:es)?|seguridad|fallo(?:s)?|error(?:es)?|leak(?:s)?|bug(?:s)?)\s+(?:en|sobre|de)\s+[`"']?([a-zA-Z0-9_.\[\]/-]+\.[a-zA-Z0-9_-]+)/gi;
-    while ((match = riskQueryRegex.exec(instructions)) !== null) {
-      const clean = normalizeFilePath(match[1]);
-      if (clean && !clean.includes("..")) {
-        seenPaths.add(clean);
-        explicitReadPaths.add(clean);
-      }
-    }
-
-    // Si en las instrucciones de revisión de repositorio se citaron ficheros y hay intención técnica
-    if (seenPaths.size > 0 && explicitReadPaths.size === 0) {
-      const hasReviewIntent = /(?:revis|analiz|comprob|examin|inspeccion|audit|verific|fuga|seguridad|fallo|error)/i.test(instructions);
-      if (hasReviewIntent) {
-        for (const p of seenPaths) {
-          explicitReadPaths.add(p);
-        }
-      }
-    }
+  if (scope?.kind === "repository") {
+    for (const path of seenPaths) explicitReadPaths.add(path);
   }
 
   // Verificación de límite presupuestario (MUST: No truncar silenciosamente)
@@ -454,28 +433,23 @@ export function validateReadEvidence(params: {
     );
   }
 
-  // Verificación en revisiones sin fuente en prompt (main/rama):
-  // Si no se proporcionó código en el prompt, el modelo no puede aseverar haber leído
-  // ni emitir bloques de código de ficheros que no hayan sido leídos efectivamente en GitHub.
-  if (scope?.hasSourceInPrompt === false) {
-    const readClaimRegex = /(?:he\s+(?:le[ií]do|revisado|analizado|inspeccionado|comprobado|examinado)|tras\s+(?:leer|revisar|analizar|inspeccionar))\s+[`"']?([a-zA-Z0-9_.\[\]/-]+\.[a-zA-Z0-9_-]+)/gi;
-    let claimMatch: RegExpExecArray | null;
-    while ((claimMatch = readClaimRegex.exec(verdict)) !== null) {
-      const claimedPath = normalizeFilePath(claimMatch[1]);
-      if (claimedPath && !tracker.findSuccessfulRead(claimedPath)) {
-        throw new ReadEvidenceError(
-          "MISSING_READ",
-          `No se ejecutó la lectura requerida de ${claimedPath}`,
-          claimedPath
-        );
-      }
-    }
+  // Formal main reviews have no source in their prompt. An empty requirement
+  // list means bounded dynamic selection, never permission to approve unread code.
+  // Evidence proves source provenance, not truth or complete coverage of conclusions.
+  if (
+    scope?.kind === "repository" &&
+    requiredSources.length === 0 &&
+    !tracker.getRecords().some((r) => r.success)
+  ) {
+    throw new ReadEvidenceError(
+      "MISSING_READ",
+      "La revisión formal del repositorio requiere una lectura efectiva del código"
+    );
   }
 
   if (requiredSources.length === 0) {
     return;
   }
-
 
   const codeBlocksWithMeta = extractCodeBlocksWithMetadata(verdict);
   const candidatePaths = requiredSources.map((r) => r.path);

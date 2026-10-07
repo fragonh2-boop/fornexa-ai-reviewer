@@ -8,6 +8,7 @@ import {
   validateReadEvidence,
   MAX_READ_BYTES_PER_FILE,
   MAX_TOTAL_READ_BYTES,
+  MAX_REQUIRED_SOURCES,
 } from "../src/read-evidence.js";
 import {
   isReviewResponseForRequest,
@@ -730,7 +731,7 @@ test("20. Procedencia de runtime: ref='main' aceptado contra pinned SHA en revis
   assert.equal(mismatchRecord.error, "Cross-request mismatch");
 });
 
-test("21. Camino real agent-GitHub-validación-index: candado, dobles en memoria, fallo cerrado y cierre determinístico", async () => {
+test("21. Simulación aislada de guard, candado y terminal; no ejecuta agent/index", async () => {
   const inFlightMap = new Map<string, number>();
   const acquire = (key: string) => {
     if (inFlightMap.has(key)) return { acquired: false, startedAt: 0 };
@@ -1241,7 +1242,7 @@ test("30. PR Review: diff suministrado en prompt evalúa cambios sin exigir lect
   assert.match(verdict, /MERGE: YES/);
 });
 
-test("31. MUST 1 Probe: afirmación de lectura en veredicto sin tool call falla cerrado aun con instrucción genérica", async () => {
+test("31. Formal main sin fuente falla cerrado con instrucción genérica, independiente de afirmaciones del modelo", async () => {
   const repo = "fragonh2-boop/fornexa-ai-reviewer";
   const headSha = "c0e27bf183df80c35aed5bc6a2fd4200144fb0f3";
   const ctx: RefContext = {
@@ -1270,8 +1271,207 @@ test("31. MUST 1 Probe: afirmación de lectura en veredicto sin tool call falla 
     (err: unknown) => {
       assert(err instanceof ReadEvidenceError);
       assert.equal(err.code, "MISSING_READ");
-      assert.equal(err.path, "src/secret.ts");
+      assert.match(err.safeMessage, /requiere una lectura efectiva/);
       return true;
     }
   );
+});
+
+const formalMainContext: RefContext = {
+  ref: "main",
+  headSha: "fac26e0be18f0b31de75684800054ea61abdce87",
+  headMessage: "metadata, not source",
+  recentCommits: [],
+  checks: [],
+  repo: "fragonh2-boop/fornexa-ai-reviewer",
+};
+
+function scriptedReviewAdapter(readPaths: string[], verdict: string): ModelAdapter {
+  let turns = 0;
+  return {
+    async complete() {
+      if (turns++ === 0 && readPaths.length) {
+        return {
+          role: "assistant",
+          content: null,
+          tool_calls: readPaths.map((path, index) => ({
+            id: `read_${index}`,
+            type: "function" as const,
+            function: {
+              name: "get_full_file",
+              arguments: JSON.stringify({ path, ref: "main" }),
+            },
+          })),
+        };
+      }
+      return { role: "assistant", content: verdict };
+    },
+  };
+}
+
+test("32. Formal main exige fuente para inglés, paráfrasis y revisión sin rutas, no por regex de veredicto", async () => {
+  const fixtures = [
+    ["Review src/auth.ts and tell me whether it contains a secret leak.", "I have read src/auth.ts. MUST: none. MERGE: YES"],
+    ["¿Qué opinas de `src/auth.ts`? ¿Está correcto?", "Revisado src/auth.ts: todo correcto. MUST: ninguno. MERGE: YES"],
+    ["Revisa main y dime si hay vulnerabilidades de seguridad.", "No hay vulnerabilidades. MUST: ninguno. MERGE: YES"],
+    ["Revisa el estado general del repositorio", "### src/auth.ts\n```ts\nexport const fabricated = true;\n```\nMERGE: YES"],
+    ["", "MUST: ninguno. MERGE: YES"],
+  ];
+  for (const [instructions, verdict] of fixtures) {
+    let reads = 0;
+    await assert.rejects(
+      reviewRepository(formalMainContext, instructions, {
+        adapter: scriptedReviewAdapter([], verdict),
+        getFile: async () => { reads++; return "source"; },
+      }),
+      (err: unknown) => err instanceof ReadEvidenceError && err.code === "MISSING_READ"
+    );
+    assert.equal(reads, 0);
+  }
+});
+
+test("33. Una lectura ajena no satisface ninguna ruta objetivo nombrada en revisión formal main", async () => {
+  for (const [instructions, expectedMissing] of [
+    ["Review src/auth.ts for correctness.", "src/auth.ts"],
+    ["¿Qué opinas de `src/auth.ts`?", "src/auth.ts"],
+    ["src/auth.ts y src/session.ts", "src/auth.ts"],
+    ["Review README.md for correctness.", "README.md"],
+  ]) {
+    const observed: string[] = [];
+    await assert.rejects(
+      reviewRepository(formalMainContext, instructions, {
+        adapter: scriptedReviewAdapter(["src/unrelated.ts"], "MUST: ninguno. MERGE: YES"),
+        getFile: async (path, ref, repo) => {
+          assert.equal(ref, formalMainContext.headSha);
+          assert.equal(repo, formalMainContext.repo);
+          observed.push(path);
+          return "export const unrelated = true;";
+        },
+      }),
+      (err: unknown) => err instanceof ReadEvidenceError && err.code === "MISSING_READ" && err.path === expectedMissing
+    );
+    assert.deepEqual(observed, ["src/unrelated.ts"]);
+  }
+});
+
+test("34. Formal main acepta selección dinámica acotada o todas las rutas nombradas leídas en el SHA activo", async () => {
+  for (const [instructions, paths] of [
+    ["Review the current repository state.", ["src/auth.ts"]],
+    ["src/auth.ts y src/session.ts", ["src/auth.ts", "src/session.ts"]],
+  ] as Array<[string, string[]]>) {
+    const observed: string[] = [];
+    const verdict = await reviewRepository(formalMainContext, instructions, {
+      adapter: scriptedReviewAdapter(paths, "MUST: ninguno. MERGE: YES"),
+      getFile: async (path, ref) => {
+        assert.equal(ref, formalMainContext.headSha);
+        observed.push(path);
+        return "export const authentic = true;";
+      },
+    });
+    assert.deepEqual(observed, paths);
+    assert.match(verdict, /MERGE: YES/);
+    // This proves source provenance/consumption, not truth or complete coverage
+    // of every conclusion in model prose. No model assertion is the evidence.
+  }
+});
+
+test("35. Formal main no permite desactivar el contrato mediante opciones inyectadas", async () => {
+  await assert.rejects(
+    reviewRepository(formalMainContext, "Review main.", {
+      adapter: scriptedReviewAdapter([], "MERGE: YES"),
+      getFile: async () => "source",
+      ...({ scope: { kind: "pull_request", hasSourceInPrompt: true } } as Record<string, unknown>),
+    }),
+    (err: unknown) => err instanceof ReadEvidenceError && err.code === "MISSING_READ"
+  );
+});
+
+test("36. Selección de fuentes main y lecturas dinámicas excedidas fallan sin recorte ni lectura undécima", async () => {
+  const paths = Array.from({ length: MAX_REQUIRED_SOURCES + 1 }, (_, i) => `src/file${i}.ts`);
+  let modelCalls = 0;
+  for (const delimiter of [", ", " ", "\n", "\t", ",", ";", ":"]) {
+    await assert.rejects(
+      reviewRepository(formalMainContext, `Review ${paths.join(delimiter)}`, {
+        adapter: { async complete() { modelCalls++; return { role: "assistant", content: "MERGE: YES" }; } },
+      }),
+      (err: unknown) => err instanceof ReadEvidenceError && err.code === "BUDGET_EXCEEDED"
+    );
+  }
+  assert.equal(modelCalls, 0);
+
+  const observed: string[] = [];
+  await assert.rejects(
+    reviewRepository(formalMainContext, "Review main.", {
+      adapter: scriptedReviewAdapter(paths, "MERGE: YES"),
+      getFile: async (path) => { observed.push(path); return "source"; },
+    }),
+    (err: unknown) => err instanceof ReadEvidenceError && err.code === "BUDGET_EXCEEDED"
+  );
+  assert.deepEqual(observed, paths.slice(0, MAX_REQUIRED_SOURCES));
+});
+
+test("37. PR diff-only de 12 rutas narrativas conserva la fuente suministrada sin forzar GitHub", async () => {
+  const paths = Array.from({ length: 12 }, (_, i) => `src/file${i}.ts`);
+  const ctx: PRContext = {
+    number: 37,
+    title: "diff-only",
+    headSha: formalMainContext.headSha,
+    baseSha: "c0e27bf183df80c35aed5bc6a2fd4200144fb0f3",
+    repo: formalMainContext.repo,
+    changedFiles: paths,
+    diffText: paths.map((path) => `diff --git a/${path} b/${path}\n+export const changed = true;\n`).join("\n"),
+    checks: [],
+  };
+  let reads = 0;
+  const verdict = await reviewPR(ctx, "SEGUNDA_REVISION", undefined, `Revisa los cambios: ${paths.join(", ")}`, {
+    adapter: scriptedReviewAdapter([], "Revisado el diff suministrado. MUST: ninguno. MERGE: YES"),
+    getFile: async () => { reads++; return "source"; },
+  });
+  assert.equal(reads, 0);
+  assert.match(verdict, /MERGE: YES/);
+});
+
+test("38. Lectura dinámica fallida no puede ser sustituida por el veredicto ni filtra el error bruto", async () => {
+  const marker = "SYNTHETIC_READ_ERROR_CANARY";
+  let turns = 0;
+  const adapter = scriptedReviewAdapter(["src/auth.ts"], "MERGE: YES");
+  await assert.rejects(
+    reviewRepository(formalMainContext, "Review main.", {
+      adapter: { async complete(messages, tools) { turns++; return adapter.complete(messages, tools); } },
+      getFile: async () => { throw new Error(marker); },
+    }),
+    (err: unknown) => {
+      assert(err instanceof ReadEvidenceError);
+      assert.equal(err.code, "READ_FAILED");
+      assert.equal(err.safeMessage.includes(marker), false);
+      assert.equal(err.message.includes(marker), false);
+      return true;
+    }
+  );
+  assert.equal(turns, 1);
+});
+
+test("39. Rutas adyacentes por separadores admitidos se vinculan todas, sin consumir el delimitador", async () => {
+  const paths = ["src/a.ts", "src/b.ts", "src/c.ts"];
+  for (const delimiter of [" ", "\n", "\t", ",", ";", ":"]) {
+    const instructions = `Review ${paths.join(delimiter)}`;
+    assert.deepEqual(
+      detectRequiredSources(instructions, { kind: "repository" }).map((source) => source.path),
+      paths
+    );
+    await assert.rejects(
+      reviewRepository(formalMainContext, instructions, {
+        adapter: scriptedReviewAdapter([paths[0], paths[2]], "MUST: ninguno. MERGE: YES"),
+        getFile: async () => "source",
+      }),
+      (err: unknown) => err instanceof ReadEvidenceError && err.code === "MISSING_READ" && err.path === paths[1]
+    );
+    const observed: string[] = [];
+    const verdict = await reviewRepository(formalMainContext, instructions, {
+      adapter: scriptedReviewAdapter(paths, "MUST: ninguno. MERGE: YES"),
+      getFile: async (path) => { observed.push(path); return "source"; },
+    });
+    assert.deepEqual(observed, paths);
+    assert.match(verdict, /MERGE: YES/);
+  }
 });

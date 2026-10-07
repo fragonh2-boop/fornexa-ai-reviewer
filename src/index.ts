@@ -3,7 +3,7 @@ import { createDiagnosticReporter } from "./request-diagnostics.js";
 import { processImplementation } from "./implementation-runner.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
-import { ReadEvidenceError } from "./read-evidence.js";
+import { createReviewProcessor } from "./review-processor.js";
 import {
   readRecentHistory,
   findPendingHandoffWithThreadState,
@@ -40,11 +40,6 @@ import { isMeshControlAuthorized, parseMeshPingTarget } from "./mesh-control.js"
 import { reconcilePolledMesh } from "./mesh-poll.js";
 import { verifySlackPublisherIdentity } from "./slack-publisher-identity.js";
 import {
-  type ReviewRequest,
-  isRepositoryAllowed,
-  normalizeRepository,
-} from "./review-request.js";
-import {
   buildContextFromThread,
   containsPotentialSecret,
   contextAuthorKey,
@@ -71,7 +66,6 @@ import {
 } from "./slack-mentions.js";
 
 const MAX_REMEMBERED_EVENT_IDS = 1000;
-const inFlightReviews = new Map<string, number>();
 const inFlightContextThreads = new Map<string, number>();
 const inFlightMentions = new Map<string, number>();
 const nonReplyableMentionRequestTs = new Set<string>();
@@ -90,33 +84,16 @@ const reportMalformed = createDiagnosticReporter(
 );
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
 
-interface ReviewDelivery {
-  requestTs: string;
-  threadTs: string;
-}
-
-function withReviewCorrelation(text: string, delivery?: ReviewDelivery): string {
-  if (!delivery) return text;
-  const [firstLine, ...rest] = text.split("\n");
-  return [firstLine, `SLACK_REQUEST_TS: ${delivery.requestTs}`, ...rest].join("\n");
-}
-
-async function postReviewUpdate(text: string, delivery?: ReviewDelivery): Promise<void> {
-  const correlated = withReviewCorrelation(text, delivery);
-  if (!delivery) {
-    await postToChannel(correlated);
-    return;
-  }
-
-  try {
-    await postToThread(correlated, delivery.threadTs);
-  } catch (error) {
-    if (!isCannotReplyToMessageError(error)) throw error;
-    await postToChannel(
-      `${correlated}\n\nTHREAD_TS: ${delivery.threadTs}\n_Respuesta publicada en el canal porque Slack no admite respuestas en ese mensaje._`
-    );
-  }
-}
+const { processReviewRequest, notifyFailure } = createReviewProcessor({
+  agentLabel: config.slack.agentLabel,
+  staleLockMs,
+  getPRContext,
+  getRefContext,
+  reviewPR: (ctx, instructions) => reviewPR(ctx, "SEGUNDA_REVISION", undefined, instructions),
+  reviewRepository,
+  postToChannel,
+  postToThread,
+});
 
 function createMeshBridge(): MeshBridge {
   return new MeshBridge(
@@ -171,135 +148,6 @@ async function publishNonReplyableMentionFailure(
     `[${new Date().toISOString()}] Slack no permite responder al hilo ${turn.threadTs}; ` +
       `la solicitud ${turn.ts} quedó cerrada en el canal.`
   );
-}
-
-async function processReviewRequest(
-  request: ReviewRequest,
-  delivery?: ReviewDelivery
-): Promise<void> {
-  const repo = normalizeRepository(request.repository);
-  const targetLabel = request.target === "pr" ? `pr:${repo}:${request.prNumber}` : `ref:${repo}:${request.ref}`;
-  const reviewKey = `${targetLabel}:${request.requestedHead}`;
-  const lock = acquireLock(inFlightReviews, reviewKey, staleLockMs);
-  if (!lock.acquired) {
-    console.log(`[${new Date().toISOString()}] Revisión ${reviewKey} ya está en curso; se omite.`);
-    return;
-  }
-  if (lock.recoveredStaleLock) {
-    console.warn(
-      `[${new Date().toISOString()}] Revisión ${reviewKey} atascada durante más de ${config.staleLockMinutes} minuto(s); se reintenta.`
-    );
-  }
-
-  try {
-    if (!isRepositoryAllowed(repo)) {
-      console.warn(`[${new Date().toISOString()}] Repositorio no permitido: '${repo}'.`);
-      const targetScope =
-        request.target === "pr"
-          ? `PR #${request.prNumber}: HEAD solicitado \`${request.requestedHead}\``
-          : `TARGET: ${request.ref}\nHEAD \`${request.requestedHead}\``;
-      await postReviewUpdate(
-        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\n` +
-          `Repo: ${repo}\n` +
-          `${targetScope}: repositorio no autorizado: \`${repo}\`.\n\n` +
-          `_Solo se admiten repositorios autorizados en la allowlist cerrada._`,
-        delivery
-      );
-      return;
-    }
-
-    await postReviewUpdate(
-      `${config.slack.agentLabel} — REVISIÓN RECIBIDA\n\n` +
-        `Solicitud aceptada para ${repo} (${request.target === "pr" ? `PR #${request.prNumber}` : `TARGET: ${request.ref}`}), HEAD \`${request.requestedHead}\`. ` +
-        "Se publicará un resultado terminal en este hilo.",
-      delivery
-    );
-
-    if (request.target === "pr") {
-      console.log(
-        `[${new Date().toISOString()}] Handoff detectado: ${repo} PR #${request.prNumber}, HEAD ${request.requestedHead}. Revisando...`
-      );
-
-      const ctx = await getPRContext(request.prNumber, repo);
-      if (ctx.headSha.toLowerCase() !== request.requestedHead) {
-        if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
-        await postReviewUpdate(
-          `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\n` +
-            `Repo: ${repo}\n` +
-            `PR #${ctx.number}: el HEAD solicitado \`${request.requestedHead}\` ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n` +
-            `_Publicad una nueva acción requerida con el SHA actual; no se ha revisado un diff distinto del solicitado._`,
-          delivery
-        );
-        console.log(
-          `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en ${repo} PR #${request.prNumber}.`
-        );
-        return;
-      }
-
-      const verdict = await reviewPR(ctx, "SEGUNDA_REVISION", undefined, request.instructions);
-      const postReviewCtx = await getPRContext(request.prNumber, repo);
-      if (postReviewCtx.headSha !== ctx.headSha) throw new Error('HEAD changed during review');
-      const body = `${config.slack.agentLabel} — REVISIÓN\n\n` +
-        `Repo: ${repo}\n` +
-        `PR #${ctx.number}: ${ctx.title}\n` +
-        `HEAD revisado: \`${ctx.headSha}\`\n\n` +
-        `${verdict}\n\n` +
-        `_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
-
-      if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
-      await postReviewUpdate(body, delivery);
-      console.log(`[${new Date().toISOString()}] Veredicto publicado en Slack para ${repo} PR #${request.prNumber}.`);
-      return;
-    }
-
-    console.log(
-      `[${new Date().toISOString()}] Handoff detectado: ${repo} TARGET ${request.ref}, HEAD ${request.requestedHead}. Revisando estado del repositorio...`
-    );
-
-    const ctx = await getRefContext(request.ref, repo);
-    if (ctx.headSha.toLowerCase() !== request.requestedHead) {
-      if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
-      await postReviewUpdate(
-        `${config.slack.agentLabel} — REVISIÓN NO INICIADA\n\n` +
-          `Repo: ${repo}\n` +
-          `TARGET: ${request.ref}\n` +
-          `HEAD \`${request.requestedHead}\`: ya no coincide con el HEAD actual \`${ctx.headSha}\`.\n\n` +
-          `_Publicad una nueva acción requerida con TARGET: ${request.ref} y el SHA actual; no se ha revisado un estado distinto del solicitado._`,
-        delivery
-      );
-      console.log(
-        `[${new Date().toISOString()}] Revisión omitida por HEAD desactualizado en ${repo} TARGET ${request.ref}.`
-      );
-      return;
-    }
-
-    const verdict = await reviewRepository(ctx, request.instructions);
-    const body = `${config.slack.agentLabel} — REVISIÓN\n\n` +
-      `Repo: ${repo}\n` +
-      `TARGET: ${ctx.ref}\n` +
-      `HEAD revisado: \`${ctx.headSha}\`\n\n` +
-      `${verdict}\n\n` +
-      `_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._`;
-
-    if (!ownsLock(inFlightReviews, reviewKey, lock.startedAt)) return;
-    await postReviewUpdate(body, delivery);
-    console.log(`[${new Date().toISOString()}] Revisión de estado publicada para ${repo} TARGET ${ctx.ref}.`);
-  } catch (err) {
-    if (ownsLock(inFlightReviews, reviewKey, lock.startedAt)) {
-      const isReadEvidence = err instanceof ReadEvidenceError;
-      const safeReason = isReadEvidence
-        ? `la revisión del HEAD \`${request.requestedHead}\` falló por falta o discrepancia de evidencia de lectura (${err.safeMessage})`
-        : `la revisión del HEAD \`${request.requestedHead}\` falló antes de completarse`;
-      const scope =
-        request.target === "pr"
-          ? `Repo: ${repo}\nPR #${request.prNumber}: ${safeReason}.`
-          : `Repo: ${repo}\nTARGET: ${request.ref}\nHEAD \`${request.requestedHead}\`: ${safeReason}.`;
-      await notifyFailure(scope, delivery);
-    }
-    throw err;
-  } finally {
-    releaseLock(inFlightReviews, reviewKey, lock.startedAt);
-  }
 }
 
 async function processContextThread(threadTs: string): Promise<void> {
@@ -518,17 +366,6 @@ async function findPendingMention(messages: SlackMessage[]): Promise<{
   return null;
 }
 
-async function notifyFailure(scope: string, delivery?: ReviewDelivery): Promise<void> {
-  try {
-    await postReviewUpdate(
-      `${config.slack.agentLabel} — REVISIÓN FALLIDA\n\n${scope}\n\n_El detalle técnico se conserva en el log del servicio. El candado se liberará para permitir un reintento seguro._`,
-      delivery
-    );
-  } catch (notificationError) {
-    console.error("No se pudo publicar el aviso de fallo en Slack:", notificationError);
-  }
-}
-
 async function findPendingContextThread(messages: SlackMessage[]): Promise<{
   threadTs: string;
 } | null> {
@@ -582,6 +419,10 @@ async function tick(): Promise<void> {
     await processReviewRequest(pending, {
       requestTs: pending.raw.ts,
       threadTs: pending.raw.threadTs ?? pending.raw.ts,
+    }).catch(() => {
+      // The processor has attempted the correlated terminal and released its
+      // lock; do not forward arbitrary provider/tool errors to polling logs.
+      throw new Error("Fallo procesando una revisión durante el sondeo.");
     });
     return;
   }
@@ -703,7 +544,7 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
           reviewSenderMessage?.ts ??
           envelope.event?.ts ??
           "unknown",
-      }).catch((err) => console.error("Error procesando el evento de Slack:", err));
+      }).catch(() => console.error("Fallo procesando la revisión del evento de Slack."));
     });
     return;
   }

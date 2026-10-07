@@ -12,6 +12,7 @@ import {
   detectRequiredSources,
   validateReadEvidence,
   normalizeFilePath,
+  MAX_REQUIRED_SOURCES,
   type ReviewEvidenceScope,
 } from "./read-evidence.js";
 import { DEFAULT_REPOSITORY, normalizeRepository } from "./review-request.js";
@@ -88,7 +89,6 @@ const tools: ChatCompletionTool[] = [
 export interface ReviewOptions {
   adapter?: ModelAdapter;
   getFile?: (path: string, ref: string, repo?: string) => Promise<string>;
-  scope?: ReviewEvidenceScope;
 }
 
 async function runReview(
@@ -103,8 +103,7 @@ async function runReview(
   const targetRepo = repo || DEFAULT_REPOSITORY;
   const tracker = new ReadEvidenceTracker(targetRepo, head);
   const effectiveScope: ReviewEvidenceScope = scope ?? {
-    hasSourceInPrompt: targetRef === "pr",
-    targetRef,
+    kind: targetRef === "pr" ? "pull_request" : "repository",
   };
   const requiredSources = detectRequiredSources(requestInstructions, effectiveScope);
 
@@ -171,6 +170,15 @@ async function runReview(
           }
         }
 
+        // Bound actual reads as well as named requirements; do not silently
+        // discard dynamically selected sources or permit unbounded repeated reads.
+        if (tracker.getRecords().length >= MAX_REQUIRED_SOURCES) {
+          throw new ReadEvidenceError(
+            "BUDGET_EXCEEDED",
+            "Se superó el límite de lecturas permitidas para la revisión"
+          );
+        }
+
         try {
           const content = await activeGetFile(requestedPath, head, repo);
           tracker.recordRead({
@@ -180,14 +188,14 @@ async function runReview(
             content,
           });
           return content;
-        } catch (err) {
+        } catch {
           tracker.recordRead({
             repo: targetRepo,
             ref: head,
             path: requestedPath,
             error: "Read failed",
           });
-          throw err;
+          throw new ReadEvidenceError("READ_FAILED", "No se pudo obtener una fuente requerida para la revisión");
         }
       },
     },
@@ -210,11 +218,7 @@ export async function reviewPR(
   requestInstructions?: string,
   options?: ReviewOptions
 ): Promise<string> {
-  const scope: ReviewEvidenceScope = options?.scope ?? {
-    hasSourceInPrompt: true,
-    targetRef: "pr",
-    providedPaths: ctx.changedFiles,
-  };
+  const scope: ReviewEvidenceScope = { kind: "pull_request" };
   return runReview(
     [
       { role: "system", content: SYSTEM_PROMPT },
@@ -247,11 +251,9 @@ export async function reviewRepository(
   requestInstructions: string,
   options?: ReviewOptions
 ): Promise<string> {
-  const scope: ReviewEvidenceScope = options?.scope ?? {
-    hasSourceInPrompt: false,
-    targetRef: ctx.ref,
-    providedPaths: [],
-  };
+  // Metadata/conversation APIs are separate. This formal review contract cannot
+  // be disabled by provider text, language, or injected test options.
+  const scope: ReviewEvidenceScope = { kind: "repository" };
   return runReview(
     [
       { role: "system", content: SYSTEM_PROMPT },
