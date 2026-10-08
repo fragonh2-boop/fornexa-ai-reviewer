@@ -2,11 +2,16 @@ import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/reso
 import type { ModelAdapter } from './providers.js';
 import { ReadEvidenceError } from './read-evidence.js';
 export interface Capability { definition: ChatCompletionTool; execute(args: Record<string, unknown>): Promise<string> }
+export const DEFAULT_MAX_CONTEXT_BYTES = 2_000_000; // 2 MB (consistent with MAX_TOTAL_READ_BYTES)
+export const DEFAULT_MAX_FILE_BYTES = 500 * 1024; // 500 KB (aligned with MAX_READ_BYTES_PER_FILE in read-evidence.ts)
+
 /** Provider-independent execution and budgets. Only supplied capabilities can run. */
 export async function runCapabilities(adapter: ModelAdapter, messages: ChatCompletionMessageParam[], capabilities: Capability[]): Promise<string> {
+  const maxContextBytes = Number(process.env.MAX_CONTEXT_BYTES) || DEFAULT_MAX_CONTEXT_BYTES;
+  const maxFileBytes = Number(process.env.MAX_FILE_BYTES) || DEFAULT_MAX_FILE_BYTES;
   let bytes = Buffer.byteLength(JSON.stringify(messages));
   for (let round = 0; round < 8; round++) {
-    if (bytes > 500_000) throw new Error('Context budget exceeded');
+    if (bytes > maxContextBytes) throw new Error('Context budget exceeded');
     const message = await adapter.complete(messages, capabilities.map(c => c.definition));
     bytes += Buffer.byteLength(JSON.stringify(message));
     if (!message.tool_calls?.length) {
@@ -34,7 +39,7 @@ export async function runCapabilities(adapter: ModelAdapter, messages: ChatCompl
         }
         content = `Error: ${(err as Error).message}`;
       }
-      if (Buffer.byteLength(content) > 100_000) throw new Error('File budget exceeded');
+      if (Buffer.byteLength(content) > maxFileBytes) throw new Error('File budget exceeded');
       bytes += Buffer.byteLength(content);
       messages.push({ role: 'tool', tool_call_id: call.id, content });
     }

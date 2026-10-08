@@ -71,3 +71,51 @@ test("una capacidad que funciona sigue devolviendo su contenido tal cual", async
   const toolMessage = messages.find((m) => m.role === "tool");
   assert.equal((toolMessage as { content: string }).content, "contenido real");
 });
+
+test("admite mensajes de contexto mayores a 500 KB hasta el presupuesto por defecto de 2 MB", async () => {
+  const adapter = fakeAdapter([finalMessage]);
+  // 600 KB payload (greater than old 500_000 byte limit, under 2 MB limit)
+  const bigContent = "a".repeat(600_000);
+  const messages: ChatCompletionMessageParam[] = [{ role: "user", content: bigContent }];
+
+  const result = await runCapabilities(adapter, messages, []);
+  assert.equal(result, "veredicto final");
+});
+
+test("lanza 'Context budget exceeded' cuando el mensaje supera el presupuesto", async () => {
+  const adapter = fakeAdapter([finalMessage]);
+  // Exceeds 2 MB default limit
+  const hugeContent = "x".repeat(2_100_000);
+  const messages: ChatCompletionMessageParam[] = [{ role: "user", content: hugeContent }];
+
+  await assert.rejects(
+    async () => runCapabilities(adapter, messages, []),
+    /Context budget exceeded/
+  );
+});
+
+test("admite resultados de herramientas entre 100 KB y 500 KB", async () => {
+  const adapter = fakeAdapter([toolCallMessage("mid_payload"), finalMessage]);
+  const capability: Capability = {
+    definition: toolDefinitionFor("mid_payload"),
+    execute: async () => "y".repeat(250_000), // 250 KB > old 100 KB limit, <= 500 KB
+  };
+  const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "revisa" }];
+
+  const result = await runCapabilities(adapter, messages, [capability]);
+  assert.equal(result, "veredicto final");
+});
+
+test("lanza 'File budget exceeded' cuando una herramienta supera 500 KB", async () => {
+  const adapter = fakeAdapter([toolCallMessage("oversized_payload"), finalMessage]);
+  const capability: Capability = {
+    definition: toolDefinitionFor("oversized_payload"),
+    execute: async () => "z".repeat(500 * 1024 + 10),
+  };
+  const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "revisa" }];
+
+  await assert.rejects(
+    async () => runCapabilities(adapter, messages, [capability]),
+    /File budget exceeded/
+  );
+});
