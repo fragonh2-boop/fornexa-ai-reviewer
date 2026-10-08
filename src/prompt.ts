@@ -28,7 +28,7 @@ Aislamiento por tenant, permisos OWNER/ADMIN, privacidad de Storage, atomicidad,
 condiciones de carrera, seguridad de tokens, lifecycle DeCA, integridad de PDFs,
 CMR/eCMR, trazabilidad, migraciones, UX documental y gates de producción.`;
 
-export const DEFAULT_MAX_INLINE_DIFF_CHARS = 150_000;
+export const DEFAULT_MAX_INLINE_DIFF_CHARS = 1_800_000;
 
 export function buildUserPrompt(params: {
   prNumber: number;

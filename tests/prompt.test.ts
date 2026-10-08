@@ -37,3 +37,20 @@ test("buildUserPrompt: trunca inline diffs gigantescos y añade aviso de get_ful
   assert.ok(prompt.includes("Usa la herramienta get_full_file"));
   assert.ok(!prompt.includes("x".repeat(50_001)));
 });
+
+test("buildUserPrompt: conserva diffs de hasta 600k caracteres por defecto (como PR #91)", () => {
+  const pr91Diff = "x".repeat(600_000);
+  const prompt = buildUserPrompt({
+    prNumber: 91,
+    title: "PR 91",
+    headSha: "2e948a121da84d52d86e83535ddef24a6657907e",
+    diffText: pr91Diff,
+    changedFiles: ["app/dashboard/layout.module.css"],
+    checks: [],
+    mode: "SEGUNDA_REVISION",
+  });
+
+  assert.ok(prompt.includes("Diff completo:"));
+  assert.ok(!prompt.includes("diff truncado"));
+});
+
