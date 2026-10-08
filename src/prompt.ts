@@ -28,6 +28,8 @@ Aislamiento por tenant, permisos OWNER/ADMIN, privacidad de Storage, atomicidad,
 condiciones de carrera, seguridad de tokens, lifecycle DeCA, integridad de PDFs,
 CMR/eCMR, trazabilidad, migraciones, UX documental y gates de producción.`;
 
+export const DEFAULT_MAX_INLINE_DIFF_CHARS = 150_000;
+
 export function buildUserPrompt(params: {
   prNumber: number;
   title: string;
@@ -38,6 +40,7 @@ export function buildUserPrompt(params: {
   mode: "SEGUNDA_REVISION" | "ARBITRAJE";
   arbitrationContext?: string;
   requestInstructions?: string;
+  maxInlineDiffChars?: number;
 }): string {
   const checksSummary = params.checks
     .map((c) => `- ${c.name}: ${c.status}/${c.conclusion ?? "pendiente"}`)
@@ -47,6 +50,15 @@ export function buildUserPrompt(params: {
     params.mode === "ARBITRAJE"
       ? `Se te llama como ÁRBITRO. Contexto del desacuerdo entre GPT y Claude:\n${params.arbitrationContext ?? "(no proporcionado)"}\n`
       : `Se te llama para una SEGUNDA REVISIÓN independiente.\n`;
+
+  const maxInlineDiff = params.maxInlineDiffChars ?? (Number(process.env.MAX_INLINE_DIFF_CHARS) || DEFAULT_MAX_INLINE_DIFF_CHARS);
+  const isDiffTruncated = params.diffText.length > maxInlineDiff;
+  const diffLabel = isDiffTruncated
+    ? `Diff (primeros ${maxInlineDiff} caracteres de ${params.diffText.length}; para el resto usa get_full_file):`
+    : "Diff completo:";
+  const safeDiffText = isDiffTruncated
+    ? `${params.diffText.slice(0, maxInlineDiff)}\n\n... [diff truncado: el diff completo contiene ${params.diffText.length} caracteres y supera el límite inline de ${maxInlineDiff}. Usa la herramienta get_full_file para inspeccionar el contenido exacto de los ficheros modificados]`
+    : params.diffText;
 
   return `${header}
 PR #${params.prNumber}: ${params.title}
@@ -61,9 +73,9 @@ ${checksSummary || "(sin checks reportados)"}
 Ficheros modificados:
 ${params.changedFiles.map((f) => `- ${f}`).join("\n")}
 
-Diff completo:
+${diffLabel}
 \`\`\`diff
-${params.diffText}
+${safeDiffText}
 \`\`\`
 
 Si necesitas contenido completo, usa get_full_file con el HEAD exacto. Responde a la solicitud original usando MUST/SHOULD/NICE.`;

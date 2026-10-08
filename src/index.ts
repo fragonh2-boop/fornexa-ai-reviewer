@@ -83,6 +83,7 @@ const reportMalformed = createDiagnosticReporter(
   botReviewRequestOptions
 );
 const staleLockMs = config.staleLockMinutes * 60 * 1000;
+let lastReviewError: { timestamp: string; message: string } | null = null;
 
 const { processReviewRequest, notifyFailure } = createReviewProcessor({
   agentLabel: config.slack.agentLabel,
@@ -419,7 +420,11 @@ async function tick(): Promise<void> {
     await processReviewRequest(pending, {
       requestTs: pending.raw.ts,
       threadTs: pending.raw.threadTs ?? pending.raw.ts,
-    }).catch(() => {
+    }).catch((err) => {
+      lastReviewError = {
+        timestamp: new Date().toISOString(),
+        message: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      };
       // The processor has attempted the correlated terminal and released its
       // lock; do not forward arbitrary provider/tool errors to polling logs.
       throw new Error("Fallo procesando una revisión durante el sondeo.");
@@ -544,7 +549,13 @@ async function handleSlackEvents(req: IncomingMessage, res: ServerResponse): Pro
           reviewSenderMessage?.ts ??
           envelope.event?.ts ??
           "unknown",
-      }).catch(() => console.error("Fallo procesando la revisión del evento de Slack."));
+      }).catch((err) => {
+        lastReviewError = {
+          timestamp: new Date().toISOString(),
+          message: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+        };
+        console.error("Fallo procesando la revisión del evento de Slack:", err);
+      });
     });
     return;
   }
@@ -617,8 +628,12 @@ function startHttpServer(): void {
           ? "Slack Events + polling de respaldo"
           : "polling";
         res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+        const commit = process.env.RENDER_GIT_COMMIT ?? "v0.2.0-budget";
+        const errorInfo = lastReviewError
+          ? `\nlast_error_at: ${lastReviewError.timestamp}\nlast_error: ${lastReviewError.message}`
+          : "\nlast_error: none";
         res.end(
-          `fornexa-ai-reviewer: vivo, provider=${config.model.provider}, model=${config.model.name}, modo ${mode}.\n`
+          `fornexa-ai-reviewer: vivo, commit=${commit}, provider=${config.model.provider}, model=${config.model.name}, modo ${mode}.${errorInfo}\n`
         );
         return;
       }
