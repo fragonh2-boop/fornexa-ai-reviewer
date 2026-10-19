@@ -5,9 +5,8 @@ export interface SlackPublisherIdentityClient {
 }
 
 /**
- * Fails closed before MESH/1 is enabled when the token that will publish ACKs
- * is not the explicitly configured bot identity. This prevents a shared or
- * human token from being used as a bot presence responder.
+ * Fails closed when the publisher token is not the configured bot identity.
+ * Call before starting any service that requires a dedicated identity.
  */
 export async function verifySlackPublisherIdentity(params: {
   client: SlackPublisherIdentityClient;
@@ -17,7 +16,27 @@ export async function verifySlackPublisherIdentity(params: {
   const identity = await params.client.auth.test();
   if (identity.user_id !== params.expectedUserId || identity.bot_id !== params.expectedBotId) {
     throw new Error(
-      "MESH/1 deshabilitado: el token publicador no coincide con SLACK_BOT_USER_ID y SLACK_BOT_ID."
+      "Publicación deshabilitada: el token publicador no coincide con SLACK_BOT_USER_ID y SLACK_BOT_ID."
     );
   }
+}
+
+/** Verify dedicated Grok credentials even when MESH/1 is disabled. */
+export async function verifySlackStartupIdentity(params: {
+  client: SlackPublisherIdentityClient;
+  provider: string;
+  meshEnabled: boolean;
+  expectedUserId: string | null;
+  expectedBotId: string | null;
+}): Promise<void> {
+  if (params.provider !== "grok" && !params.meshEnabled) return;
+  if (!/^U[A-Z0-9]+$/.test(params.expectedUserId ?? "") ||
+      !/^B[A-Z0-9]+$/.test(params.expectedBotId ?? "")) {
+    throw new Error("La identidad propia exige SLACK_BOT_USER_ID y SLACK_BOT_ID válidos.");
+  }
+  await verifySlackPublisherIdentity({
+    client: params.client,
+    expectedUserId: params.expectedUserId!,
+    expectedBotId: params.expectedBotId!,
+  });
 }

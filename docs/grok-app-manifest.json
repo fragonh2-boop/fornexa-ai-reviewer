@@ -1,0 +1,27 @@
+{
+  "display_information": {
+    "name": "GrokFornexa",
+    "description": "Revisor independiente Grok para FORNEXA"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "GrokFornexa",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "app_mentions:read"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
