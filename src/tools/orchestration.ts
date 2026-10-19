@@ -6,6 +6,9 @@ import { isRepositoryAllowed, normalizeRepository } from "../review-request.js";
 export const CLAUDE_SLACK_USER_ID = process.env.CLAUDE_SLACK_USER_ID?.trim() || "U0C3L9US98D";
 export const GPT_SLACK_USER_ID = process.env.GPT_SLACK_USER_ID?.trim() || "U0BTA39J97T";
 export const DEEPSEEK_SLACK_USER_ID = process.env.DEEPSEEK_SLACK_USER_ID?.trim() || "U0BV95NCT89";
+export const GEMINI_SLACK_USER_ID = process.env.GEMINI_SLACK_USER_ID?.trim() || "U0C362TR8HG";
+export const FORNEXAGPT_SLACK_USER_ID = process.env.FORNEXAGPT_SLACK_USER_ID?.trim() || "U0C4X8N9QD6";
+export const GROK_SLACK_USER_ID = process.env.GROK_SLACK_USER_ID?.trim() || "U0CB2KDU588";
 
 export interface OrchestrationDependencies {
   getPRContext: typeof getPRContext;
@@ -131,22 +134,31 @@ export async function dispatchDeepSeekReview(
   };
 }
 
+export type SupportedDispatchAgent =
+  | "gemini"
+  | "fornexagpt"
+  | "codex"
+  | "deepseek"
+  | "grok"
+  | "claude"
+  | "chatgpt";
+
 export interface AgentMessageDispatchParams {
-  agent: "claude" | "chatgpt";
+  agent: SupportedDispatchAgent;
   message: string;
   threadTs?: string;
 }
 
 export interface AgentMessageDispatchResult {
   ok: boolean;
-  agent: "claude" | "chatgpt";
+  agent: SupportedDispatchAgent;
   targetUserId: string;
   postedTo: "channel" | "thread";
   messageText: string;
 }
 
 /**
- * Envía un mensaje en Slack mencionando a Claude o ChatGPT para solicitar su colaboración.
+ * Envía un mensaje en Slack mencionando a otra IA para solicitar su colaboración.
  */
 export async function dispatchAgentMessage(
   params: AgentMessageDispatchParams,
@@ -163,8 +175,16 @@ export async function dispatchAgentMessage(
     targetUserId = CLAUDE_SLACK_USER_ID;
   } else if (agent === "chatgpt") {
     targetUserId = GPT_SLACK_USER_ID;
+  } else if (agent === "gemini") {
+    targetUserId = GEMINI_SLACK_USER_ID;
+  } else if (agent === "fornexagpt" || agent === "codex") {
+    targetUserId = FORNEXAGPT_SLACK_USER_ID;
+  } else if (agent === "deepseek") {
+    targetUserId = DEEPSEEK_SLACK_USER_ID;
+  } else if (agent === "grok") {
+    targetUserId = GROK_SLACK_USER_ID;
   } else {
-    throw new Error(`Agente no soportado: '${agent}'. Debe ser 'claude' o 'chatgpt'.`);
+    throw new Error(`Agente no soportado: '${agent}'.`);
   }
 
   const messageText = `<@${targetUserId}> ${prompt}`;

@@ -12,6 +12,7 @@ export interface MentionSlackMessage {
   user?: string;
   botId?: string;
   threadTs?: string;
+  subtype?: string;
 }
 
 export interface SlackMentionTurn {
@@ -89,6 +90,7 @@ function isHuman(message: MentionSlackMessage): message is MentionSlackMessage &
   return Boolean(
     message.user &&
       !message.botId &&
+      !message.subtype &&
       message.text.trim() &&
       !isDelegatedAgentMessage(message.text)
   );

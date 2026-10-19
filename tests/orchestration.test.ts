@@ -12,6 +12,10 @@ const {
   dispatchAgentMessage,
   CLAUDE_SLACK_USER_ID,
   GPT_SLACK_USER_ID,
+  GEMINI_SLACK_USER_ID,
+  FORNEXAGPT_SLACK_USER_ID,
+  GROK_SLACK_USER_ID,
+  DEEPSEEK_SLACK_USER_ID,
 } = await import("../src/tools/orchestration.js");
 
 test("conversationTools incluye las herramientas de orquestación registradas", () => {
@@ -150,13 +154,59 @@ test("dispatchAgentMessage envía mención a Claude o ChatGPT correctamente", as
   assert.ok(postedThreadText.includes(`<@${GPT_SLACK_USER_ID}>`));
   assert.ok(postedThreadText.includes("¿Qué opinas del balance de carga?"));
 
-  // 3. Error si mensaje vacío
+  // 3. Mensaje a Gemini
+  const geminiResult = await dispatchAgentMessage(
+    {
+      agent: "gemini",
+      message: "¿Cómo va la PR #134?",
+    },
+    deps
+  );
+  assert.equal(geminiResult.ok, true);
+  assert.ok(postedChannelText.includes(`<@${GEMINI_SLACK_USER_ID}>`));
+  assert.ok(postedChannelText.includes("¿Cómo va la PR #134?"));
+
+  // 4. Mensaje a FornexaGPT / Codex
+  const fornexaResult = await dispatchAgentMessage(
+    {
+      agent: "fornexagpt",
+      message: "Revisión lista para integración",
+      threadTs: "1234567890.123456",
+    },
+    deps
+  );
+  assert.equal(fornexaResult.ok, true);
+  assert.ok(postedThreadText.includes(`<@${FORNEXAGPT_SLACK_USER_ID}>`));
+
+  // 5. Mensaje a Grok
+  const grokResult = await dispatchAgentMessage(
+    {
+      agent: "grok",
+      message: "Consulta de estado",
+    },
+    deps
+  );
+  assert.equal(grokResult.ok, true);
+  assert.ok(postedChannelText.includes(`<@${GROK_SLACK_USER_ID}>`));
+
+  // 6. Mensaje a DeepSeek
+  const deepseekResult = await dispatchAgentMessage(
+    {
+      agent: "deepseek",
+      message: "Verifica PR #134",
+    },
+    deps
+  );
+  assert.equal(deepseekResult.ok, true);
+  assert.ok(postedChannelText.includes(`<@${DEEPSEEK_SLACK_USER_ID}>`));
+
+  // 7. Error si mensaje vacío
   await assert.rejects(
     async () => dispatchAgentMessage({ agent: "claude", message: "   " }, deps),
     /El mensaje a enviar no puede estar vacío/
   );
 
-  // 4. Error si agente no soportado
+  // 8. Error si agente no soportado
   await assert.rejects(
     async () => dispatchAgentMessage({ agent: "unknown" as any, message: "hola" }, deps),
     /Agente no soportado/

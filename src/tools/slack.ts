@@ -17,6 +17,7 @@ export interface SlackMessage {
   botId?: string;
   threadTs?: string;
   replyCount?: number;
+  subtype?: string;
 }
 
 function toSlackMessage(message: {
@@ -26,6 +27,7 @@ function toSlackMessage(message: {
   bot_id?: string;
   thread_ts?: string;
   reply_count?: number;
+  subtype?: string;
 }): SlackMessage {
   return {
     ts: message.ts ?? "",
@@ -34,6 +36,7 @@ function toSlackMessage(message: {
     botId: message.bot_id,
     threadTs: message.thread_ts,
     replyCount: message.reply_count,
+    subtype: message.subtype,
   };
 }
 
