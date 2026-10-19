@@ -38,7 +38,7 @@ import {
 import { MeshBridge, MeshBridgeError } from "./mesh-bridge.js";
 import { isMeshControlAuthorized, parseMeshPingTarget } from "./mesh-control.js";
 import { reconcilePolledMesh } from "./mesh-poll.js";
-import { verifySlackPublisherIdentity } from "./slack-publisher-identity.js";
+import { verifySlackStartupIdentity } from "./slack-publisher-identity.js";
 import {
   buildContextFromThread,
   containsPotentialSecret,
@@ -696,12 +696,15 @@ function startHttpServer(): void {
 async function main(): Promise<void> {
   const runOnce = process.argv.includes("--once");
 
+  await verifySlackStartupIdentity({
+    client: getEffectiveSlackClient(),
+    provider: config.model.provider,
+    meshEnabled: config.slack.agentNetwork.enabled,
+    expectedUserId: config.slack.mentions.botUserId,
+    expectedBotId: config.slack.ownBotId,
+  });
+
   if (config.slack.agentNetwork.enabled) {
-    await verifySlackPublisherIdentity({
-      client: getEffectiveSlackClient(),
-      expectedUserId: config.slack.mentions.botUserId!,
-      expectedBotId: config.slack.ownBotId!,
-    });
     meshBridge = createMeshBridge();
     console.log("MESH/1: identidad del token publicador verificada.");
   }
