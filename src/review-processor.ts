@@ -111,7 +111,7 @@ export function createReviewProcessor(deps: ReviewProcessorDependencies) {
         await postReviewUpdate(
           `${deps.agentLabel} — REVISIÓN\n\nRepo: ${repo}\nPR #${ctx.number}: ${ctx.title}\n` +
             `HEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n` +
-            "_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._", delivery
+            "_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta al equipo (Gemini / FornexaGPT / Grok)._", delivery
         );
         return;
       }
@@ -131,7 +131,7 @@ export function createReviewProcessor(deps: ReviewProcessorDependencies) {
       await postReviewUpdate(
         `${deps.agentLabel} — REVISIÓN\n\nRepo: ${repo}\nTARGET: ${ctx.ref}\n` +
           `HEAD revisado: \`${ctx.headSha}\`\n\n${verdict}\n\n` +
-          "_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta a GPT/Claude._", delivery
+          "_No se ha implementado, fusionado ni desplegado nada. Turno de vuelta al equipo (Gemini / FornexaGPT / Grok)._", delivery
       );
     } catch (err) {
       if (ownsLock(locks, reviewKey, lock.startedAt)) {

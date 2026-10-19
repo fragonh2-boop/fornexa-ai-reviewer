@@ -366,3 +366,21 @@ test("no confunde las partes de la respuesta con mensajes de otros agentes en el
   assert.equal(conversation[1].content.includes("Interferencia de Claude"), false);
   assert.deepEqual(conversation[2], { role: "user", content: "pregunta posterior" });
 });
+
+test("mensajes de sistema con subtype (ej. channel_join) no se procesan como menciones humanas", () => {
+  const root = {
+    ts: "1000.000001",
+    subtype: "channel_join",
+    text: `<@${botUserId}> se ha unido al canal`,
+    user: "UFRAN",
+  };
+  const turn = selectPendingMentionTurn({
+    channel,
+    threadTs: root.ts,
+    messages: [root],
+    botUserId,
+    agentLabel: "GEMINI",
+  });
+  assert.equal(turn, null);
+});
+

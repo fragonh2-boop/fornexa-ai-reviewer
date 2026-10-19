@@ -345,6 +345,7 @@ async function findPendingMention(messages: SlackMessage[]): Promise<{
     .filter(
       (message) =>
         !message.botId &&
+        !message.subtype &&
         Boolean(message.user) &&
         !isDelegatedAgentMessage(message.text) &&
         (!message.threadTs || message.threadTs === message.ts) &&
