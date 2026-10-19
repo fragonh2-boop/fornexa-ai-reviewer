@@ -1,6 +1,6 @@
 import OpenAI, { type ClientOptions } from 'openai';
 import type { ChatCompletionMessageParam, ChatCompletionTool, ChatCompletionMessage } from 'openai/resources/index.js';
-export type ProviderName = 'gpt' | 'claude' | 'gemini' | 'deepseek';
+export type ProviderName = 'gpt' | 'claude' | 'gemini' | 'deepseek' | 'grok';
 export interface ModelAdapter {
   complete(messages: ChatCompletionMessageParam[], tools: ChatCompletionTool[]): Promise<ChatCompletionMessage>;
 }
@@ -9,6 +9,8 @@ export const endpoints: Record<ProviderName, string> = {
   claude: 'https://api.anthropic.com/v1',
   gemini: 'https://generativelanguage.googleapis.com/v1beta/openai',
   deepseek: 'https://api.deepseek.com',
+  // xAI serves an OpenAI-compatible chat-completions API (POST /v1/chat/completions).
+  grok: 'https://api.x.ai/v1',
 };
 const TRANSIENT_PROVIDER_RETRIES = 2;
 /** Shared function-calling transport; no repository permissions live in adapters. */

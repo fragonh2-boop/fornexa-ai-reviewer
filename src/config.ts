@@ -52,7 +52,7 @@ function trustedSlackIdentities(name: string, raw: string | undefined): string[]
 
 const provider = (process.env.AI_PROVIDER ?? 'deepseek') as ProviderName;
 if (!Object.hasOwn(endpoints, provider)) throw new Error('Unsupported AI_PROVIDER');
-const prefix = { gpt: 'OPENAI', claude: 'ANTHROPIC', gemini: 'GEMINI', deepseek: 'DEEPSEEK' }[provider];
+const prefix = { gpt: 'OPENAI', claude: 'ANTHROPIC', gemini: 'GEMINI', deepseek: 'DEEPSEEK', grok: 'GROK' }[provider];
 const mentionsEnabled = booleanValue("SLACK_MENTIONS_ENABLED", false);
 const botUserId = process.env.SLACK_BOT_USER_ID?.trim() || null;
 if (mentionsEnabled && !/^U[A-Z0-9]+$/.test(botUserId ?? "")) {
