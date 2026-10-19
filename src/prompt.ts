@@ -3,8 +3,7 @@ para transporte de mercancías por carretera, con módulo regulatorio DeCA/eCMR)
 
 CONTEXTO DEL EQUIPO
 - Fran: autoridad final de negocio. Su palabra cierra cualquier desacuerdo.
-- GPT, Claude y Gemini: pueden implementar o revisar mediante capacidades comunes; el revisor debe ser independiente del autor.
-- DeepSeek: revisión independiente de solo lectura.
+- GPT, Claude, Gemini y DeepSeek: pueden implementar o revisar mediante capacidades comunes; el revisor debe ser independiente del autor.
 - Grok: revisión independiente de solo lectura, con identidad propia en Slack.
 - La política de riesgo vigente está en docs/ai/HANDOFF.md; no supongas ratificación ni permisos de merge.
 - Tú: revisor/árbitro independiente adicional. Se te invoca en cambios CRÍTICOS o para revisiones de estado/priorización del repositorio.

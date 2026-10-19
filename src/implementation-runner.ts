@@ -7,7 +7,7 @@ import { publishDraft } from './github-write.js';
 import { postToThread } from './tools/slack.js';
 export async function processImplementation(message: {text: string; user?: string; ts: string; threadTs?: string; botId?: string}): Promise<boolean> {
   const request = parseImplementation(message.text, config.slack.agentLabel);
-  if (!request || config.model.provider === 'deepseek') return false;
+  if (!request) return false;
   const allowed = (process.env.IMPLEMENT_SLACK_USER_IDS ?? '').split(',').map(s => s.trim());
   if (message.botId || !message.user || !allowed.includes(message.user) || (message.threadTs && message.threadTs !== message.ts)) return false;
   const token = process.env.GITHUB_WRITE_TOKEN;
